@@ -1,0 +1,82 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon --console=plain
+
+      - name: Get version name
+        id: version
+        run: |
+          VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Rename APK
+        run: |
+          mkdir -p artifacts
+          cp app/build/outputs/apk/debug/app-debug.apk artifacts/OxyMusic-${{ steps.version.outputs.version }}.apk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OxyMusic-${{ steps.version.outputs.version }}
+          path: artifacts/*.apk
+          retention-days: 90
+
+      - name: Create Release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.apk
+          name: OxyMusic ${{ steps.version.outputs.version }}
+          body: |
+            ## 🎵 OxyMusic ${{ steps.version.outputs.version }}
+
+            ### 📥 Instalação
+            1. Baixe o arquivo `OxyMusic-*.apk` abaixo
+            2. Permita instalação de fontes desconhecidas
+            3. Toque no APK para instalar
+
+            ### ⚙️ Otimização HyperOS/MIUI
+            - Configurações → Apps → OxyMusic → Bateria → "Sem restrições"
+            - Segurança → Permissões → Auto-start → ative
+
+            ### 📋 Changelog
+            Veja [README.md](https://github.com/Kronos1027/oxymusicplay/blob/main/README.md#-changelog)
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
