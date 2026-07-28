@@ -78,39 +78,85 @@ class InnertubeClient @Inject constructor() {
     /**
      * Resolve stream URL via Innertube player endpoint.
      *
-     * Order matters: ANDROID_VR first because it returns DIRECT URLs without
-     * signatureCipher AND without poToken requirement. ANDROID (regular) returns
-     * URLs that work from server IPs but get 403 from real Android devices
-     * (YouTube's anti-abuse: expects the request to come with poToken from real app).
+     * Strategy inspired by InnerTune (z-huang/InnerTune):
+     * 1. ANDROID_MUSIC with InnerTune's API key (returns direct URLs without poToken)
+     * 2. IOS with proper iOS headers (returns direct URLs)
+     * 3. TVHTML5_SIMPLY_EMBEDDED_PLAYER with thirdParty.embedUrl
+     * 4. Fallbacks: ANDROID, ANDROID_VR, WEB
      *
      * @return ResolvedStream or null if all clients fail
      */
     suspend fun resolveStream(videoId: String): ResolvedStream? = withContext(Dispatchers.IO) {
-        // Order:
-        // 1. ANDROID_VR — direct URLs, no poToken, no signatureCipher
-        // 2. IOS — direct URLs, often works
-        // 3. ANDROID — direct URLs, but YouTube may 403 without poToken
-        // 4. ANDROID_TESTSUITE — alternate client
-        // 5. WEB — last resort, may need signature deciphering
-        val clients = listOf(
-            "ANDROID_VR" to "1.60.30",     // best for streaming — direct URLs, no poToken
-            "IOS" to "20.10.38",           // direct URLs, good fallback
-            "ANDROID_TESTSUITE" to "1.9",  // alternate
-            "ANDROID" to "20.10.38",       // may 403 without poToken
-            "WEB" to "2.20250101.00.00",   // last resort
-        )
+        // Strategy based on InnerTune's approach
+        // InnerTune uses: IOS first, then TVHTML5 with embedUrl, then combines with Piped URLs
 
-        for ((clientName, clientVersion) in clients) {
+        // 1. ANDROID_MUSIC (YouTube Music client) - InnerTune's API key
+        var result = tryClient(
+            videoId = videoId,
+            clientName = "ANDROID_MUSIC",
+            clientVersion = "5.01",
+            apiKey = "AIzaSyAOghZGza2MQSZkY_zfZ370N-PUdXEo8AI",
+            userAgent = "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/65.0.3325.181 Mobile Safari/537.36",
+            useEmbedUrl = false
+        )
+        if (result != null) {
+            Log.i(TAG, "resolveStream SUCCESS with ANDROID_MUSIC")
+            return@withContext result.copy(sourceLabel = "Innertube/ANDROID_MUSIC")
+        }
+
+        // 2. IOS - InnerTune's primary client (returns direct URLs)
+        result = tryClient(
+            videoId = videoId,
+            clientName = "IOS",
+            clientVersion = "19.29.1",
+            apiKey = "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc",
+            userAgent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)",
+            useEmbedUrl = false,
+            extraClientFields = mapOf(
+                "deviceMake" to "Apple",
+                "deviceModel" to "iPhone16,2",
+                "osName" to "iPhone",
+                "osVersion" to "17.5.1.21F90"
+            )
+        )
+        if (result != null) {
+            Log.i(TAG, "resolveStream SUCCESS with IOS")
+            return@withContext result.copy(sourceLabel = "Innertube/IOS")
+        }
+
+        // 3. TVHTML5_SIMPLY_EMBEDDED_PLAYER with thirdParty.embedUrl (InnerTune's safe fallback)
+        result = tryClient(
+            videoId = videoId,
+            clientName = "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+            clientVersion = "2.0",
+            apiKey = "AIzaSyDCU8hByM-4DrUqRUYnGn-3llEO78bcxq8",
+            userAgent = "Mozilla/5.0 (PlayStation 4 5.55) AppleWebKit/601.2 (KHTML, like Gecko)",
+            useEmbedUrl = true,
+            videoIdForEmbed = videoId
+        )
+        if (result != null) {
+            Log.i(TAG, "resolveStream SUCCESS with TVHTML5")
+            return@withContext result.copy(sourceLabel = "Innertube/TVHTML5")
+        }
+
+        // 4. ANDROID (last resort - may 403 without poToken)
+        for ((clientName, clientVersion) in listOf(
+            "ANDROID" to "20.10.38",
+            "ANDROID_VR" to "1.60.30",
+            "ANDROID_TESTSUITE" to "1.9",
+            "WEB" to "2.20250101.00.00"
+        )) {
             try {
-                val result = tryClient(videoId, clientName, clientVersion)
-                if (result != null) {
-                    Log.i(TAG, "resolveStream SUCCESS with client=$clientName")
-                    return@withContext result.copy(sourceLabel = "Innertube/$clientName")
+                val r = tryClient(videoId, clientName, clientVersion)
+                if (r != null) {
+                    Log.i(TAG, "resolveStream SUCCESS with $clientName (fallback)")
+                    return@withContext r.copy(sourceLabel = "Innertube/$clientName")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "client $clientName failed: ${e.message}")
             }
         }
+
         Log.w(TAG, "resolveStream: ALL clients failed")
         null
     }
@@ -133,14 +179,29 @@ class InnertubeClient @Inject constructor() {
         }
     }
 
-    private fun tryClient(videoId: String, clientName: String, clientVersion: String): ResolvedStream? {
+    private fun tryClient(
+        videoId: String,
+        clientName: String,
+        clientVersion: String,
+        apiKey: String = this.apiKey,
+        userAgent: String = "com.google.android.youtube/20.10.38 (Linux; U; Android 13)",
+        useEmbedUrl: Boolean = false,
+        videoIdForEmbed: String? = null,
+        extraClientFields: Map<String, String> = emptyMap()
+    ): ResolvedStream? {
         val context = JSONObject().apply {
             put("client", JSONObject().apply {
                 put("clientName", clientName)
                 put("clientVersion", clientVersion)
                 put("hl", "pt")
                 put("gl", "BR")
+                extraClientFields.forEach { (k, v) -> put(k, v) }
             })
+            if (useEmbedUrl && videoIdForEmbed != null) {
+                put("thirdParty", JSONObject().apply {
+                    put("embedUrl", "https://www.youtube.com/watch?v=$videoIdForEmbed")
+                })
+            }
         }
         val body = JSONObject().apply {
             put("context", context)
@@ -151,13 +212,6 @@ class InnertubeClient @Inject constructor() {
                 })
             })
         }.toString()
-
-        val userAgent = when (clientName) {
-            "WEB" -> "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
-            "IOS" -> "com.google.ios.youtube/20.10.38 (iPhone; iOS 17; scale=2)"
-            "ANDROID", "ANDROID_VR", "ANDROID_TESTSUITE" -> "com.google.android.youtube/20.10.38 (Linux; U; Android 13)"
-            else -> "Mozilla/5.0"
-        }
 
         val req = Request.Builder()
             .url("$baseUrl/player?key=$apiKey")

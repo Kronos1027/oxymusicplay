@@ -102,7 +102,8 @@ fun PlayerScreen(
             }
 
             // Album / Mascot
-            if (settings.animeMode && settings.mascotEnabled && (track == null || resolving)) {
+            // Show chibi mascot when anime mode + (no track OR resolving), OR show album always
+            if (settings.animeMode && settings.mascotEnabled && track == null) {
                 AnimeMascotGif(
                     animeTheme = settings.animeTheme,
                     isPlaying = isPlaying,
