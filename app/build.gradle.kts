@@ -14,8 +14,8 @@ android {
         applicationId = "com.oxymusic.app"
         minSdk = 31
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.3.0-mvp"
+        versionCode = 4
+        versionName = "1.4.0-mvp"
         vectorDrawables { useSupportLibrary = true }
     }
     buildTypes {
