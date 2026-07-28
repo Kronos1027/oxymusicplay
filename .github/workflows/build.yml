@@ -66,7 +66,7 @@ jobs:
             ## 🎵 OxyMusic ${{ steps.version.outputs.version }}
 
             ### 📥 Instalação
-            1. Baixe o arquivo `OxyMusic-*.apk` abaixo
+            1. Baixe o arquivo `OxyMusic-${{ steps.version.outputs.version }}.apk` abaixo
             2. Permita instalação de fontes desconhecidas
             3. Toque no APK para instalar
 
@@ -75,8 +75,42 @@ jobs:
             - Segurança → Permissões → Auto-start → ative
 
             ### 📋 Changelog
-            Veja [README.md](https://github.com/Kronos1027/oxymusicplay/blob/main/README.md#-changelog)
+            Veja [CHANGELOG.md](https://github.com/Kronos1027/oxymusicplay/blob/main/CHANGELOG.md)
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clean up old assets from release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # Delete any APK assets that don't match the current version
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "Cleaning up old assets from release $TAG_NAME (keeping only $VERSION)"
+          # Get release ID
+          RELEASE_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG_NAME" | \
+            python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
+          if [ -z "$RELEASE_ID" ]; then
+            echo "No release found for tag $TAG_NAME"
+            exit 0
+          fi
+          # List assets and delete any that don't match current version
+          curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | \
+            python3 -c "
+          import json, sys, subprocess
+          assets = json.load(sys.stdin)
+          for a in assets:
+              name = a.get('name', '')
+              aid = a.get('id', '')
+              if '$VERSION' not in name:
+                  print(f'Deleting old asset: {name} (id={aid})')
+                  subprocess.run(['curl', '-s', '-X', 'DELETE', '-H', 'Authorization: token \${{ secrets.GITHUB_TOKEN }}',
+                      f'https://api.github.com/repos/${{ github.repository }}/releases/assets/{aid}'],
+                      capture_output=True)
+              else:
+                  print(f'Keeping: {name}')
+          "
