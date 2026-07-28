@@ -1,5 +1,6 @@
 package com.oxymusic.app.ui.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oxymusic.app.data.HistoryDao
@@ -54,6 +55,14 @@ class PlayerViewModel @Inject constructor(
     private val _lastSource = MutableStateFlow<String?>(null)
     val lastSource: StateFlow<String?> = _lastSource.asStateFlow()
 
+    private val _debugLog = MutableStateFlow<String>("")
+    val debugLog: StateFlow<String> = _debugLog.asStateFlow()
+
+    private fun log(msg: String) {
+        Log.i(TAG, msg)
+        _debugLog.value = _debugLog.value + "\n" + msg
+    }
+
     init {
         // Position ticker
         viewModelScope.launch {
@@ -69,33 +78,48 @@ class PlayerViewModel @Inject constructor(
             while (!attached) {
                 delay(500)
                 val sid = CurrentAudioSessionId.value
-                if (sid != 0) { visualizer.attach(sid); attached = true }
+                if (sid != 0) { visualizer.attach(sid); attached = true; log("Visualizer attached to session $sid") }
             }
         }
         // Forward playback errors to errorMessage
         viewModelScope.launch {
-            playback.lastError.collect { e -> if (e != null) _errorMessage.value = e }
+            playback.lastError.collect { e ->
+                if (e != null) {
+                    log("PLAYBACK ERROR: $e")
+                    _errorMessage.value = e
+                }
+            }
         }
     }
 
     fun playTrack(track: Track) {
+        log("▶ playTrack: ${track.title} - ${track.artist} (id=${track.id})")
         viewModelScope.launch {
             _resolving.value = true
             _resolvingSource.value = "Innertube → NewPipe → Piped"
             _errorMessage.value = null
             _mascotMessage.value = "Resolvendo stream… ⏳"
             try {
+                log("Calling youtube.resolveStream...")
                 val result = youtube.resolveStream(track)
+                log("resolveStream result: success=${result.success} source=${result.source} streamUrl=${if (result.track.streamUrl.isNullOrEmpty()) "NULL" else "OK len=${result.track.streamUrl!!.length}"}")
+
                 if (!result.success || result.track.streamUrl.isNullOrEmpty()) {
-                    _errorMessage.value = result.error ?: "Não consegui obter o stream. Tente outra música."
+                    val errMsg = result.error ?: "Não consegui obter stream URL. Tente outra música."
+                    log("ERROR: $errMsg")
+                    _errorMessage.value = errMsg
                     _mascotMessage.value = "Ops! 😢 Não consegui tocar essa"
                     _resolving.value = false
                     _resolvingSource.value = null
                     return@launch
                 }
+
                 _lastSource.value = result.source
                 _mascotMessage.value = "Tocando via ${result.source}! 🎶"
+                log("Calling playback.playTrack with streamUrl=${result.track.streamUrl!!.take(80)}...")
                 playback.playTrack(result.track)
+                log("playback.playTrack returned, waiting for state change...")
+
                 historyDao.insert(
                     HistoryEntity(
                         trackId = result.track.id, title = result.track.title, artist = result.track.artist,
@@ -103,7 +127,17 @@ class PlayerViewModel @Inject constructor(
                         playedAt = System.currentTimeMillis(),
                     )
                 )
+
+                // Watchdog: if after 10 seconds nothing is playing AND no error, show error
+                launch {
+                    delay(10000)
+                    if (!isPlaying.value && _errorMessage.value == null && currentTrack.value?.id == track.id) {
+                        log("WATCHDOG: 10s elapsed, not playing, no error — showing timeout message")
+                        _errorMessage.value = "Timeout: o stream não começou em 10s. Talvez esteja bloqueado pelo YouTube. Tente outra música."
+                    }
+                }
             } catch (e: Throwable) {
+                log("EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
                 _errorMessage.value = "Erro: ${e.message ?: "desconhecido"}"
                 _mascotMessage.value = "Ops! 😢"
             } finally {
@@ -115,6 +149,7 @@ class PlayerViewModel @Inject constructor(
 
     /** Plays a known-good test MP3 to isolate playback issues. */
     fun playTestAudio() {
+        log("▶ playTestAudio: Google sample MP3")
         viewModelScope.launch {
             _errorMessage.value = null
             _mascotMessage.value = "Teste de playback… 🎵"
@@ -127,6 +162,7 @@ class PlayerViewModel @Inject constructor(
                 streamUrl = "https://storage.googleapis.com/exoplayer-test-media-0/play.mp3",
             )
             playback.playTrack(testTrack)
+            log("Test MP3 submitted to ExoPlayer")
         }
     }
 
@@ -144,6 +180,7 @@ class PlayerViewModel @Inject constructor(
     fun previous() = playback.previous()
     fun seekTo(ms: Long) = playback.seekTo(ms)
     fun clearError() { _errorMessage.value = null }
+    fun clearDebugLog() { _debugLog.value = "" }
 
     private suspend fun loadLyrics(track: Track) {
         _lyrics.value = null
@@ -162,5 +199,9 @@ class PlayerViewModel @Inject constructor(
             durationSec = if (track.durationMs > 0) track.durationMs / 1000 else null
         )
         _lyrics.value = lyrics
+    }
+
+    companion object {
+        private const val TAG = "PlayerViewModel"
     }
 }

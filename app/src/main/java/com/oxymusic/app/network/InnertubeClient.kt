@@ -78,87 +78,112 @@ class InnertubeClient @Inject constructor() {
     /**
      * Resolve stream URL via Innertube player endpoint.
      *
-     * Strategy inspired by InnerTune (z-huang/InnerTune):
-     * 1. ANDROID_MUSIC with InnerTune's API key (returns direct URLs without poToken)
-     * 2. IOS with proper iOS headers (returns direct URLs)
-     * 3. TVHTML5_SIMPLY_EMBEDDED_PLAYER with thirdParty.embedUrl
-     * 4. Fallbacks: ANDROID, ANDROID_VR, WEB
+     * Strategy based on YouTube.js (LuanRT/YouTube.js) v17.2.0 (June 2026):
+     * Uses LATEST client versions. Order:
+     * 1. IOS v20.11.6 — direct URLs without poToken
+     * 2. ANDROID_MUSIC v5.34.51 — YouTube Music Android client
+     * 3. TVHTML5_SIMPLY_EMBEDDED_PLAYER v2.0 with thirdParty.embedUrl
+     * 4. ANDROID v21.03.36 — full device config
+     * 5. Fallbacks: ANDROID_VR, WEB
      *
      * @return ResolvedStream or null if all clients fail
      */
     suspend fun resolveStream(videoId: String): ResolvedStream? = withContext(Dispatchers.IO) {
-        // Strategy based on InnerTune's approach
-        // InnerTune uses: IOS first, then TVHTML5 with embedUrl, then combines with Piped URLs
+        log("resolveStream START videoId=$videoId")
 
-        // 1. ANDROID_MUSIC (YouTube Music client) - InnerTune's API key
+        // 1. IOS v20.11.6 (LuanRT/YouTube.js latest)
         var result = tryClient(
             videoId = videoId,
-            clientName = "ANDROID_MUSIC",
-            clientVersion = "5.01",
-            apiKey = "AIzaSyAOghZGza2MQSZkY_zfZ370N-PUdXEo8AI",
-            userAgent = "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/65.0.3325.181 Mobile Safari/537.36",
-            useEmbedUrl = false
-        )
-        if (result != null) {
-            Log.i(TAG, "resolveStream SUCCESS with ANDROID_MUSIC")
-            return@withContext result.copy(sourceLabel = "Innertube/ANDROID_MUSIC")
-        }
-
-        // 2. IOS - InnerTune's primary client (returns direct URLs)
-        result = tryClient(
-            videoId = videoId,
             clientName = "IOS",
-            clientVersion = "19.29.1",
+            clientVersion = "20.11.6",
             apiKey = "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc",
-            userAgent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)",
-            useEmbedUrl = false,
+            userAgent = "com.google.ios.youtube/20.11.6 (iPhone10,4; U; CPU iOS 16_7_7 like Mac OS X)",
             extraClientFields = mapOf(
                 "deviceMake" to "Apple",
-                "deviceModel" to "iPhone16,2",
-                "osName" to "iPhone",
-                "osVersion" to "17.5.1.21F90"
+                "deviceModel" to "iPhone10,4",
+                "osName" to "iOS",
+                "osVersion" to "16.7.7.20H330"
             )
         )
         if (result != null) {
-            Log.i(TAG, "resolveStream SUCCESS with IOS")
+            log("resolveStream SUCCESS with IOS")
             return@withContext result.copy(sourceLabel = "Innertube/IOS")
         }
 
-        // 3. TVHTML5_SIMPLY_EMBEDDED_PLAYER with thirdParty.embedUrl (InnerTune's safe fallback)
+        // 2. ANDROID_MUSIC v5.34.51 (YouTube Music Android)
+        result = tryClient(
+            videoId = videoId,
+            clientName = "ANDROID_MUSIC",
+            clientVersion = "5.34.51",
+            apiKey = "AIzaSyAOghZGza2MQSZkY_zfZ370N-PUdXEo8AI",
+            userAgent = "com.google.android.apps.youtube.music/5.34.51 (Linux; U; Android 16; SM-S908E)",
+            extraClientFields = mapOf(
+                "osName" to "Android",
+                "osVersion" to "16",
+                "androidSdkVersion" to "36"
+            )
+        )
+        if (result != null) {
+            log("resolveStream SUCCESS with ANDROID_MUSIC")
+            return@withContext result.copy(sourceLabel = "Innertube/ANDROID_MUSIC")
+        }
+
+        // 3. TVHTML5_SIMPLY_EMBEDDED_PLAYER v2.0 with embedUrl
         result = tryClient(
             videoId = videoId,
             clientName = "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
             clientVersion = "2.0",
             apiKey = "AIzaSyDCU8hByM-4DrUqRUYnGn-3llEO78bcxq8",
-            userAgent = "Mozilla/5.0 (PlayStation 4 5.55) AppleWebKit/601.2 (KHTML, like Gecko)",
+            userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
             useEmbedUrl = true,
             videoIdForEmbed = videoId
         )
         if (result != null) {
-            Log.i(TAG, "resolveStream SUCCESS with TVHTML5")
+            log("resolveStream SUCCESS with TVHTML5")
             return@withContext result.copy(sourceLabel = "Innertube/TVHTML5")
         }
 
-        // 4. ANDROID (last resort - may 403 without poToken)
-        for ((clientName, clientVersion) in listOf(
-            "ANDROID" to "20.10.38",
-            "ANDROID_VR" to "1.60.30",
-            "ANDROID_TESTSUITE" to "1.9",
-            "WEB" to "2.20250101.00.00"
+        // 4. ANDROID v21.03.36 (latest YouTube Android)
+        result = tryClient(
+            videoId = videoId,
+            clientName = "ANDROID",
+            clientVersion = "21.03.36",
+            apiKey = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
+            userAgent = "com.google.android.youtube/21.03.36 (Linux; U; Android 16; SM-S908E)",
+            extraClientFields = mapOf(
+                "osName" to "Android",
+                "osVersion" to "16",
+                "androidSdkVersion" to "36"
+            )
+        )
+        if (result != null) {
+            log("resolveStream SUCCESS with ANDROID")
+            return@withContext result.copy(sourceLabel = "Innertube/ANDROID")
+        }
+
+        // 5. Fallbacks
+        for ((clientName, clientVersion, ua) in listOf(
+            Triple("ANDROID_VR", "1.65.10", "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; Quest 2 Build/SQ3A.220605.009.A1)"),
+            Triple("WEB", "2.20260623.01.00", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+            Triple("MWEB", "2.20260205.04.01", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
         )) {
             try {
-                val r = tryClient(videoId, clientName, clientVersion)
+                val r = tryClient(videoId, clientName, clientVersion, userAgent = ua)
                 if (r != null) {
-                    Log.i(TAG, "resolveStream SUCCESS with $clientName (fallback)")
+                    log("resolveStream SUCCESS with $clientName (fallback)")
                     return@withContext r.copy(sourceLabel = "Innertube/$clientName")
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "client $clientName failed: ${e.message}")
+                log("client $clientName failed: ${e.message}")
             }
         }
 
-        Log.w(TAG, "resolveStream: ALL clients failed")
+        log("resolveStream: ALL clients FAILED")
         null
+    }
+
+    private fun log(msg: String) {
+        Log.i(TAG, msg)
     }
 
     /**
@@ -170,11 +195,11 @@ class InnertubeClient @Inject constructor() {
             val req = Request.Builder().url(url).head().build()
             client.newCall(req).execute().use { resp ->
                 val code = resp.code
-                Log.i(TAG, "validateStreamUrl HTTP $code for ${url.take(80)}...")
+                log("validateStreamUrl HTTP $code for ${url.take(80)}...")
                 code in 200..399
             }
         } catch (e: Exception) {
-            Log.w(TAG, "validateStreamUrl error: ${e.message}")
+            log("validateStreamUrl error: ${e.message}")
             false
         }
     }
