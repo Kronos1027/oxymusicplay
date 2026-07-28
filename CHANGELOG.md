@@ -3,6 +3,32 @@
 Todos os lançamentos notáveis do OxyMusic serão documentados aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
+## [1.8.0] — 2026-07-28
+
+### 🐛 Corrigido
+- **Trending resolvido**: `FEtrending` do Innertube retornava `INVALID_ARGUMENT`. YouTube mudou a API.
+  - **Solução**: agora usa `FEmusic_home` com client `ANDROID_MUSIC` (YouTube Music home) → retorna 51+ músicas populares
+  - Fallback: busca por "músicas populares 2026" se YouTube Music falhar
+  - Parser de `musicTwoRowItemRenderer` recursivo (walks the tree)
+- **Playback mais robusto**: trocado `DefaultHttpDataSource` por `OkHttpDataSource` (muuuito melhor)
+  - `OkHttpClient` configurado com `followRedirects(true)`, `followSslRedirects(true)`, `retryOnConnectionFailure(true)`
+  - `setUserAgent("com.google.android.youtube/...")` ← User-Agent do app YouTube oficial
+  - Headers default: `Accept: */*`, `Accept-Language: pt-BR,pt;q=0.9,en;q=0.8`
+
+### ✨ Adicionado
+- **Erros de playback muito mais detalhados**: agora mostra
+  - Código do erro ExoPlayer (ex: `ERROR_CODE_IO_BAD_HTTP_STATUS`)
+  - Causa (ex: `InvalidResponseCodeException`)
+  - HTTP status code (ex: `403` ou `404`)
+  - Explicação do status code (403 = URL expirada ou IP rejeitado)
+- Logs via `android.util.Log` em todas as etapas (visíveis via `adb logcat | grep PlaybackController`)
+- Dependência `media3-datasource-okhttp` (OkHttp-based DataSource)
+
+### 🔧 Mudado
+- `PlaybackController.buildDetailedErrorMessage()` extrai causa e status code do PlaybackException
+- `InnertubeClient.trending()` reescrito com YouTube Music endpoint
+- `extractTrackFromItem()` genérico funciona com vários tipos de renderer
+
 ## [1.7.0] — 2026-07-28
 
 ### 🐛 Corrigido

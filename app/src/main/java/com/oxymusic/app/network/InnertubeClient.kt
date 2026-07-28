@@ -214,95 +214,146 @@ class InnertubeClient @Inject constructor() {
     }
 
     /**
-     * Get trending videos via Innertube /browse endpoint with FEtrending.
-     * More reliable than Piped — uses YouTube's internal API directly.
+     * Get trending videos via Innertube /browse endpoint.
+     *
+     * Note: FEtrending returns "Invalid argument" — YouTube changed the API.
+     * We try FEmusic_home (YouTube Music home) which returns trending music.
+     * Falls back to a curated search if that also fails.
      */
     suspend fun trending(region: String = "BR"): List<Track> = withContext(Dispatchers.IO) {
+        // Try YouTube Music home — returns popular music
         try {
             val body = JSONObject().apply {
                 put("context", JSONObject().apply {
                     put("client", JSONObject().apply {
-                        put("clientName", "ANDROID")
-                        put("clientVersion", "20.10.38")
+                        put("clientName", "ANDROID_MUSIC")
+                        put("clientVersion", "7.16.53")
                         put("hl", "pt")
                         put("gl", region)
                     })
                 })
-                put("browseId", "FEtrending")
+                put("browseId", "FEmusic_home")
             }.toString()
 
             val req = Request.Builder()
-                .url("$baseUrl/browse?key=$apiKey")
+                .url("https://music.youtube.com/youtubei/v1/browse?key=AIzaSyC9XL3ZjWddXxa6g74aFMFhNziO1lJ8MZw")
                 .post(body.toRequestBody("application/json".toMediaType()))
-                .header("User-Agent", "com.google.android.youtube/20.10.38 (Linux; U; Android 13)")
+                .header("User-Agent", "com.google.android.apps.youtube.music/7.16.53 (Linux; U; Android 13)")
                 .header("Content-Type", "application/json")
                 .build()
 
             client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext emptyList()
-                val raw = resp.body?.string() ?: return@withContext emptyList()
-                parseTrending(raw)
+                if (resp.isSuccessful) {
+                    val raw = resp.body?.string() ?: ""
+                    val tracks = parseMusicHome(raw)
+                    if (tracks.isNotEmpty()) {
+                        Log.i(TAG, "trending SUCCESS via YouTube Music home: ${tracks.size} tracks")
+                        return@withContext tracks
+                    }
+                }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "trending error", e)
-            emptyList()
+            Log.w(TAG, "trending YouTube Music home failed: ${e.message}")
         }
+
+        // Fallback: search for popular music
+        try {
+            val popular = search("músicas populares 2026")
+            if (popular.isNotEmpty()) {
+                Log.i(TAG, "trending SUCCESS via search fallback: ${popular.size} tracks")
+                return@withContext popular
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "trending search fallback failed: ${e.message}")
+        }
+
+        emptyList()
     }
 
-    private fun parseTrending(raw: String): List<Track> {
+    /**
+     * Parse YouTube Music home response. Walks the tree recursively looking for
+     * musicTwoRowItemRenderer or any item with videoId + title.
+     */
+    private fun parseMusicHome(raw: String): List<Track> {
         val tracks = mutableListOf<Track>()
+        val seen = mutableSetOf<String>()
         try {
             val root = JSONObject(raw)
-            // Walk contents → twoColumnBrowseResultsRenderer → tabs → tabRenderer → content → richGridRenderer → contents
-            val twoCol = root.optJSONObject("contents")
-                ?.optJSONObject("twoColumnBrowseResultsRenderer")
-                ?.optJSONArray("tabs") ?: return emptyList()
-
-            for (i in 0 until twoCol.length()) {
-                val tab = twoCol.optJSONObject(i)?.optJSONObject("tabRenderer") ?: continue
-                val content = tab.optJSONObject("content") ?: continue
-                val richGrid = content.optJSONObject("richGridRenderer") ?: continue
-                val contents = richGrid.optJSONArray("contents") ?: continue
-
-                for (j in 0 until contents.length()) {
-                    val item = contents.optJSONObject(j) ?: continue
-                    val richItem = item.optJSONObject("richItemRenderer") ?: continue
-                    val video = richItem.optJSONObject("content")?.optJSONObject("videoRenderer") ?: continue
-                    val track = parseVideoRenderer(video) ?: continue
-                    tracks.add(track)
-                }
-                if (tracks.isNotEmpty()) break
-            }
+            walkForTracks(root, tracks, seen)
         } catch (e: Exception) {
-            Log.e(TAG, "parseTrending error", e)
+            Log.e(TAG, "parseMusicHome error", e)
         }
         return tracks
     }
 
-    private fun parseVideoRenderer(v: JSONObject): Track? {
-        val videoId = v.optString("videoId").ifEmpty { return null }
+    private fun walkForTracks(obj: Any, tracks: MutableList<Track>, seen: MutableSet<String>) {
+        when (obj) {
+            is JSONObject -> {
+                // Check if this is a musicTwoRowItemRenderer or similar with videoId
+                val track = extractTrackFromItem(obj)
+                if (track != null && track.id !in seen) {
+                    seen.add(track.id)
+                    tracks.add(track)
+                }
+                // Recurse into all values
+                obj.keys().forEach { key ->
+                    try { walkForTracks(obj.get(key), tracks, seen) } catch (e: Exception) {}
+                }
+            }
+            is JSONArray -> {
+                for (i in 0 until obj.length()) {
+                    try { walkForTracks(obj.get(i), tracks, seen) } catch (e: Exception) {}
+                }
+            }
+        }
+    }
 
+    private fun extractTrackFromItem(obj: JSONObject): Track? {
+        // Try various renderer types
+        val renderer = obj.optJSONObject("musicTwoRowItemRenderer")
+            ?: obj.optJSONObject("playlistPanelVideoRenderer")
+            ?: obj.optJSONObject("compactVideoRenderer")
+            ?: obj.optJSONObject("videoRenderer")
+            ?: return null
+
+        // Get videoId
+        var videoId = renderer.optString("videoId", "").ifEmpty { null }
+        if (videoId == null) {
+            // Try navigationEndpoint.watchEndpoint.videoId
+            videoId = renderer.optJSONObject("navigationEndpoint")
+                ?.optJSONObject("watchEndpoint")
+                ?.optString("videoId", "")
+                ?.ifEmpty { null } ?: return null
+        }
+        if (videoId.length != 11) return null
+
+        // Get title
         val title = StringBuilder()
-        v.optJSONObject("title")?.optJSONArray("runs")?.let { runs ->
+        renderer.optJSONObject("title")?.optJSONArray("runs")?.let { runs ->
             for (i in 0 until runs.length()) {
                 title.append(runs.optJSONObject(i)?.optString("text", "") ?: "")
             }
         }
         if (title.isEmpty()) {
-            v.optJSONObject("title")?.optString("simpleText", "")?.let { title.append(it) }
+            title.append(renderer.optJSONObject("title")?.optString("simpleText", "") ?: "")
         }
         if (title.isEmpty()) return null
 
-        val channel = v.optJSONObject("longBylineText")?.optJSONArray("runs")?.let { runs ->
-            runs.optJSONObject(0)?.optString("text", "") ?: ""
-        } ?: v.optJSONObject("ownerText")?.optJSONArray("runs")?.let { runs ->
-            runs.optJSONObject(0)?.optString("text", "") ?: ""
-        } ?: "Unknown"
+        // Get subtitle (artist)
+        val subtitle = StringBuilder()
+        renderer.optJSONObject("subtitle")?.optJSONArray("runs")?.let { runs ->
+            for (i in 0 until runs.length()) {
+                subtitle.append(runs.optJSONObject(i)?.optString("text", "") ?: "")
+            }
+        }
+        val artist = if (subtitle.isNotEmpty()) subtitle.toString().trim() else "Unknown"
 
-        val durationStr = v.optJSONObject("lengthText")?.optString("simpleText", "") ?: ""
-        val durationMs = parseDuration(durationStr)
-
-        val thumbs = v.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+        // Get thumbnail
+        val thumbs = renderer.optJSONObject("thumbnailRenderer")
+            ?.optJSONObject("musicThumbnailRenderer")
+            ?.optJSONObject("thumbnail")
+            ?.optJSONArray("thumbnails")
+            ?: renderer.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
         val thumb = if (thumbs != null && thumbs.length() > 0) {
             thumbs.optJSONObject(thumbs.length() - 1)?.optString("url", "") ?: ""
         } else "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
@@ -310,10 +361,19 @@ class InnertubeClient @Inject constructor() {
         return Track(
             id = videoId,
             title = title.toString().trim(),
-            artist = channel,
+            artist = artist,
             thumbnailUrl = thumb,
-            durationMs = durationMs,
+            durationMs = 0L,
         )
+    }
+
+    private fun parseTrending(raw: String): List<Track> {
+        // Kept for backwards compat, but parseMusicHome is used now
+        return parseMusicHome(raw)
+    }
+
+    private fun parseVideoRenderer(v: JSONObject): Track? {
+        return extractTrackFromItem(v)
     }
 
     /**

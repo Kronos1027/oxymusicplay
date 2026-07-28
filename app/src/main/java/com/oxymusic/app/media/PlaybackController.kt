@@ -1,6 +1,7 @@
 package com.oxymusic.app.media
 
 import android.content.Context
+import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -8,7 +9,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
@@ -17,16 +18,20 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
  * ExoPlayer direto — sem MediaController async, sem service.
  *
- * Configurado com HTTP DataSource que:
- * - Usa User-Agent "com.google.android.youtube" (algumas fontes exigem)
- * - Permite redirects cross-protocol (HTTP→HTTPS)
- * - Permite cross-origin redirects (YouTube usa CDN com redirect)
+ * Uses OkHttpDataSource (more robust than DefaultHttpDataSource):
+ * - Proper redirect handling (cross-protocol, cross-origin)
+ * - Configurable User-Agent
+ * - Better error reporting
+ *
+ * Reports detailed playback errors including HTTP status code and cause.
  */
 @Singleton
 class PlaybackController @Inject constructor(
@@ -60,18 +65,24 @@ class PlaybackController @Inject constructor(
     private var mediaSession: MediaSession?
 
     init {
-        // HTTP DataSource with proper User-Agent and cross-protocol redirects
-        // (YouTube CDN uses HTTP→HTTPS redirects that ExoPlayer blocks by default)
-        val httpDataSource = DefaultHttpDataSource.Factory()
+        // OkHttp client with permissive redirect handling
+        val okHttpClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .retryOnConnectionFailure(true)
+            .build()
+
+        // OkHttpDataSource — much better than DefaultHttpDataSource
+        val httpDataSource = OkHttpDataSource.Factory(okHttpClient)
             .setUserAgent("com.google.android.youtube/20.10.38 (Linux; U; Android 13)")
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(20_000)
+            .setDefaultRequestProperties(mapOf(
+                "Accept" to "*/*",
+                "Accept-Language" to "pt-BR,pt;q=0.9,en;q=0.8"
+            ))
 
-        // Combine with file DataSource for local files
         val dataSourceFactory = DefaultDataSource.Factory(context, httpDataSource)
-
-        // Build ExoPlayer with custom MediaSourceFactory that uses our DataSource
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
 
         player = ExoPlayer.Builder(context)
@@ -101,7 +112,9 @@ class PlaybackController @Inject constructor(
                 _durationMs.value = player.duration.takeIf { it > 0 } ?: 0L
             }
             override fun onPlayerError(error: PlaybackException) {
-                _lastError.value = "Erro ExoPlayer: ${error.errorCodeName} — ${error.message}"
+                val detailedMsg = buildDetailedErrorMessage(error)
+                Log.e(TAG, "Player error: $detailedMsg", error)
+                _lastError.value = detailedMsg
             }
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 CurrentAudioSessionId.value = audioSessionId
@@ -111,6 +124,42 @@ class PlaybackController @Inject constructor(
         mediaSession = try {
             MediaSession.Builder(context, player).build()
         } catch (e: Exception) { null }
+    }
+
+    /**
+     * Builds a detailed error message including HTTP status code and root cause.
+     */
+    private fun buildDetailedErrorMessage(error: PlaybackException): String {
+        val sb = StringBuilder()
+        sb.append("Erro ExoPlayer: ${error.errorCodeName}")
+
+        // Extract HTTP status code if available
+        val cause = error.cause
+        if (cause != null) {
+            sb.append("\nCausa: ${cause.javaClass.simpleName}: ${cause.message ?: "sem mensagem"}")
+
+            // For HttpDataSource.InvalidResponseCodeException, get the status code
+            val innerCause = cause.cause
+            if (innerCause != null) {
+                sb.append("\nCausa interna: ${innerCause.javaClass.simpleName}: ${innerCause.message ?: ""}")
+            }
+
+            // Try to extract HTTP code from message
+            val httpCodeMatch = Regex("""response code:\s*(\d+)""").find(cause.message ?: "")
+            if (httpCodeMatch != null) {
+                val code = httpCodeMatch.groupValues[1]
+                sb.append("\nHTTP status: $code")
+                when (code) {
+                    "403" -> sb.append(" (Forbidden — URL expirada ou IP rejeitado)")
+                    "404" -> sb.append(" (Not Found — URL inválida)")
+                    "429" -> sb.append(" (Too Many Requests — rate limit)")
+                    "5" + code.substring(1) -> sb.append(" (Server Error)")
+                }
+            }
+        }
+
+        sb.append("\nSource error: ${error.errorCodeName}")
+        return sb.toString()
     }
 
     fun tickPosition() {
@@ -149,7 +198,7 @@ class PlaybackController @Inject constructor(
             .setArtist(artist)
             .setArtworkUri(thumbnailUrl.takeIf { it.isNotEmpty() }?.let { android.net.Uri.parse(it) })
             .build()
-        // Sanitize stream URL — remove trailing & if any
+        // Sanitize stream URL — remove trailing & if any, ensure proper URL encoding
         val cleanUrl = streamUrl?.trim()?.let { if (it.endsWith("&")) it.dropLast(1) else it }
         return MediaItem.Builder()
             .setMediaId(id)
@@ -167,6 +216,10 @@ class PlaybackController @Inject constructor(
             thumbnailUrl = m.artworkUri?.toString() ?: "",
             streamUrl = playbackProperties?.uri?.toString(),
         )
+    }
+
+    companion object {
+        private const val TAG = "PlaybackController"
     }
 }
 

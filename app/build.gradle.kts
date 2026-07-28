@@ -14,8 +14,8 @@ android {
         applicationId = "com.oxymusic.app"
         minSdk = 31
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.7.0-mvp"
+        versionCode = 8
+        versionName = "1.8.0-mvp"
         vectorDrawables { useSupportLibrary = true }
     }
     buildTypes {
@@ -64,6 +64,9 @@ dependencies {
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.common)
     implementation(libs.androidx.media3.datasource)
+    implementation(libs.androidx.media3.datasource.okhttp)
+    // OkHttp (used by media3-datasource-okhttp)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation(libs.coil.compose)
     implementation(libs.coil.gif)
     implementation(libs.androidx.palette)
