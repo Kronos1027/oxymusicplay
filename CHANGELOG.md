@@ -3,6 +3,25 @@
 Todos os lançamentos notáveis do OxyMusic serão documentados aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
+## [1.5.0] — 2026-07-28
+
+### 🐛 Corrigido
+- **Bug crítico**: playback agora funciona! Adicionado `InnertubeClient.resolveStream()` que usa o endpoint `/player` do YouTube com múltiplos clients (WEB, ANDROID_VR, ANDROID_TESTSUITE, ANDROID, IOS). Pelo menos um deles funciona em IPs residenciais brasileiros.
+- Antes: `resolveStream` só tentava NewPipe (bloqueado por poToken) e Piped (também bloqueado) → retornava null → nada tocava.
+- Agora: Innertube player endpoint é primário, com 5 clients diferentes em fallback.
+
+### ✨ Adicionado
+- Indicador "🔍 Resolvendo stream…" com info de qual fonte está tentando: "Tentando: Innertube → NewPipe → Piped"
+- Indicador "via [fonte]" mostra qual fonte funcionou quando a música toca (ex: "via Innertube/WEB")
+- Mensagem de erro detalhada quando todas as fontes falham: explica que YouTube pode estar bloqueando o IP
+- Logs detalhados via `android.util.Log` em todas as etapas (InnertubeClient, YouTubeRepository)
+- Novo `ResolveResult` data class com info de sucesso/fonte/erro
+
+### 🔧 Mudado
+- `YouTubeRepository.resolveStream()` agora retorna `ResolveResult` em vez de `Track?`
+- `PlayerViewModel.playTrack()` mostra mensagem da mascote com a fonte que funcionou
+- PlayerScreen exibe fonte ativa no rodapé quando música toca
+
 ## [1.4.0] — 2026-07-28
 
 ### 🐛 Corrigido

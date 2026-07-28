@@ -49,9 +49,11 @@ fun PlayerScreen(
     val duration by playerVm.durationMs.collectAsState()
     val lyrics by playerVm.lyrics.collectAsState()
     val resolving by playerVm.resolving.collectAsState()
+    val resolvingSource by playerVm.resolvingSource.collectAsState()
     val buffering by playerVm.isBuffering.collectAsState()
     val mascotMsg by playerVm.mascotMessage.collectAsState()
     val errorMsg by playerVm.errorMessage.collectAsState()
+    val lastSource by playerVm.lastSource.collectAsState()
     val magnitudes by playerVm.visualizer.magnitudes.collectAsState()
     val colors = MaterialTheme.colorScheme
     val isGhibli = settings.animeMode && settings.animeTheme == AnimeTheme.GHIBLI
@@ -142,9 +144,26 @@ fun PlayerScreen(
             AnimatedVisibility(visible = buffering, enter = fadeIn(), exit = fadeOut()) {
                 Text("⏳ Carregando…", color = colors.primary, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
             }
-            // Resolving indicator
+            // Resolving indicator with source info
             AnimatedVisibility(visible = resolving && !buffering, enter = fadeIn(), exit = fadeOut()) {
-                Text("🔍 Resolvendo stream…", color = colors.primary, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(top = 8.dp)) {
+                    Text("🔍 Resolvendo stream…", color = colors.primary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        "Tentando: $resolvingSource",
+                        color = colors.onSurface.copy(alpha = 0.4f),
+                        fontSize = 10.sp,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+            // Active source indicator (when playing)
+            AnimatedVisibility(visible = !resolving && !buffering && lastSource != null && track != null, enter = fadeIn(), exit = fadeOut()) {
+                Text(
+                    "via $lastSource",
+                    color = colors.onSurface.copy(alpha = 0.35f),
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
 
             Spacer(Modifier.height(20.dp))

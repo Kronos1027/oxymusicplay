@@ -42,11 +42,17 @@ class PlayerViewModel @Inject constructor(
     private val _resolving = MutableStateFlow(false)
     val resolving: StateFlow<Boolean> = _resolving.asStateFlow()
 
+    private val _resolvingSource = MutableStateFlow<String?>(null)
+    val resolvingSource: StateFlow<String?> = _resolvingSource.asStateFlow()
+
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     private val _mascotMessage = MutableStateFlow<String?>(null)
     val mascotMessage: StateFlow<String?> = _mascotMessage.asStateFlow()
+
+    private val _lastSource = MutableStateFlow<String?>(null)
+    val lastSource: StateFlow<String?> = _lastSource.asStateFlow()
 
     init {
         // Position ticker
@@ -75,29 +81,34 @@ class PlayerViewModel @Inject constructor(
     fun playTrack(track: Track) {
         viewModelScope.launch {
             _resolving.value = true
+            _resolvingSource.value = "Innertube → NewPipe → Piped"
             _errorMessage.value = null
             _mascotMessage.value = "Resolvendo stream… ⏳"
             try {
-                val resolved = youtube.resolveStream(track)
-                if (resolved == null || resolved.streamUrl.isNullOrEmpty()) {
-                    _errorMessage.value = "Não consegui obter o stream. O YouTube pode estar bloqueando. Tente outra música."
+                val result = youtube.resolveStream(track)
+                if (!result.success || result.track.streamUrl.isNullOrEmpty()) {
+                    _errorMessage.value = result.error ?: "Não consegui obter o stream. Tente outra música."
                     _mascotMessage.value = "Ops! 😢 Não consegui tocar essa"
+                    _resolving.value = false
+                    _resolvingSource.value = null
                     return@launch
                 }
-                playback.playTrack(resolved)
+                _lastSource.value = result.source
+                _mascotMessage.value = "Tocando via ${result.source}! 🎶"
+                playback.playTrack(result.track)
                 historyDao.insert(
                     HistoryEntity(
-                        trackId = resolved.id, title = resolved.title, artist = resolved.artist,
-                        thumbnailUrl = resolved.thumbnailUrl, durationMs = resolved.durationMs,
+                        trackId = result.track.id, title = result.track.title, artist = result.track.artist,
+                        thumbnailUrl = result.track.thumbnailUrl, durationMs = result.track.durationMs,
                         playedAt = System.currentTimeMillis(),
                     )
                 )
-                _mascotMessage.value = "Toca essa! 🎶"
             } catch (e: Throwable) {
                 _errorMessage.value = "Erro: ${e.message ?: "desconhecido"}"
                 _mascotMessage.value = "Ops! 😢"
             } finally {
                 _resolving.value = false
+                _resolvingSource.value = null
             }
         }
     }
@@ -107,6 +118,7 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             _errorMessage.value = null
             _mascotMessage.value = "Teste de playback… 🎵"
+            _lastSource.value = "test-mp3"
             val testTrack = Track(
                 id = "test-sample",
                 title = "Test Playback (sample audio)",

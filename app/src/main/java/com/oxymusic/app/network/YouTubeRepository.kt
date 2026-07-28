@@ -1,5 +1,6 @@
 package com.oxymusic.app.network
 
+import android.util.Log
 import com.oxymusic.app.model.SearchResults
 import com.oxymusic.app.model.Track
 import kotlinx.coroutines.Dispatchers
@@ -22,8 +23,9 @@ import javax.inject.Singleton
  * 3. Piped API (last resort)
  *
  * Priority for STREAM URL:
- * 1. NewPipeExtractor (uses user's residential IP — URLs signed for user)
- * 2. Piped API (4 instances, fallback)
+ * 1. Innertube player endpoint with multiple client types (WEB, ANDROID_VR, etc.)
+ * 2. NewPipeExtractor (uses user's residential IP)
+ * 3. Piped API (4 instances, fallback)
  *
  * Same approach as InnerTune / RiMusic / ViMusic.
  * NO API key needed.
@@ -49,11 +51,17 @@ class YouTubeRepository @Inject constructor(
 
     /** Search YouTube via Innertube (primary), NewPipe + Piped fallback. */
     suspend fun search(query: String): SearchResults = withContext(Dispatchers.IO) {
+        Log.i(TAG, "search: '$query'")
         // 1. Innertube (primary, most reliable)
         try {
             val tracks = innertube.search(query)
-            if (tracks.isNotEmpty()) return@withContext SearchResults(query, tracks)
-        } catch (e: Exception) {}
+            if (tracks.isNotEmpty()) {
+                Log.i(TAG, "search SUCCESS via Innertube: ${tracks.size} tracks")
+                return@withContext SearchResults(query, tracks)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "search Innertube failed: ${e.message}")
+        }
 
         // 2. NewPipe fallback
         try {
@@ -74,14 +82,23 @@ class YouTubeRepository @Inject constructor(
                         durationMs = (item.duration ?: 0L) * 1000L,
                     )
                 }
-            if (items.isNotEmpty()) return@withContext SearchResults(query, items)
-        } catch (e: Exception) {}
+            if (items.isNotEmpty()) {
+                Log.i(TAG, "search SUCCESS via NewPipe: ${items.size} tracks")
+                return@withContext SearchResults(query, items)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "search NewPipe failed: ${e.message}")
+        }
 
         // 3. Piped fallback
         for (instance in pipedInstances) {
             val r = tryPipedSearch(instance, query)
-            if (r.tracks.isNotEmpty()) return@withContext r
+            if (r.tracks.isNotEmpty()) {
+                Log.i(TAG, "search SUCCESS via Piped: ${r.tracks.size} tracks")
+                return@withContext r
+            }
         }
+        Log.w(TAG, "search: ALL sources failed for '$query'")
         SearchResults(query, emptyList())
     }
 
@@ -110,13 +127,31 @@ class YouTubeRepository @Inject constructor(
     }
 
     /**
-     * Resolve stream URL. NewPipe first (user's IP), Piped fallback.
-     * Returns null if no source worked.
+     * Resolve stream URL. Returns ResolveResult with details about which source worked.
      */
-    suspend fun resolveStream(track: Track): Track? = withContext(Dispatchers.IO) {
+    suspend fun resolveStream(track: Track): ResolveResult = withContext(Dispatchers.IO) {
         val videoId = extractVideoId(track.id) ?: track.id
+        Log.i(TAG, "resolveStream: videoId=$videoId title='${track.title}'")
 
-        // 1. NewPipe (primary — uses user's residential IP, URLs signed for user)
+        // 1. Innertube player endpoint (try multiple client types)
+        try {
+            val result = innertube.resolveStream(videoId)
+            if (result != null) {
+                Log.i(TAG, "resolveStream SUCCESS via ${result.sourceLabel}")
+                return@withContext ResolveResult(
+                    track = track.copy(
+                        streamUrl = result.streamUrl,
+                        durationMs = if (result.durationMs > 0) result.durationMs else track.durationMs,
+                    ),
+                    source = result.sourceLabel,
+                    success = true,
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "resolveStream Innertube failed: ${e.message}")
+        }
+
+        // 2. NewPipe (uses user's residential IP)
         try {
             val extractor = service.getStreamExtractor("https://www.youtube.com/watch?v=$videoId")
             extractor.fetchPage()
@@ -125,23 +160,28 @@ class YouTubeRepository @Inject constructor(
                 .filter { it.url != null }
                 .maxByOrNull { it.bitrate }
             if (audio?.url != null) {
-                return@withContext track.copy(
-                    streamUrl = audio.url,
-                    durationMs = info.duration * 1000L,
-                    thumbnailUrl = track.thumbnailUrl.ifEmpty { info.thumbnails.maxByOrNull { it.height * it.width }?.url ?: "" },
-                    artist = track.artist.ifEmpty { info.uploaderName ?: "Unknown" },
-                    title = track.title.ifEmpty { info.name ?: track.title },
+                Log.i(TAG, "resolveStream SUCCESS via NewPipe")
+                return@withContext ResolveResult(
+                    track = track.copy(
+                        streamUrl = audio.url,
+                        durationMs = info.duration * 1000L,
+                        thumbnailUrl = track.thumbnailUrl.ifEmpty { info.thumbnails.maxByOrNull { it.height * it.width }?.url ?: "" },
+                        artist = track.artist.ifEmpty { info.uploaderName ?: "Unknown" },
+                        title = track.title.ifEmpty { info.name ?: track.title },
+                    ),
+                    source = "NewPipe",
+                    success = true,
                 )
             }
         } catch (e: Exception) {
-            // fall through to Piped
+            Log.w(TAG, "resolveStream NewPipe failed: ${e.message}")
         }
 
-        // 2. Piped fallback (4 instances)
+        // 3. Piped fallback (4 instances)
         for (instance in pipedInstances) {
-            val url = "$instance/streams/$videoId"
-            val raw = httpGet(url) ?: continue
             try {
+                val url = "$instance/streams/$videoId"
+                val raw = httpGet(url) ?: continue
                 val audioStr = JsonExtractor.extractArray(raw, "audioStreams") ?: emptyList()
                 val bestAudio = audioStr.mapNotNull { itemStr ->
                     val u = JsonExtractor.extractString(itemStr, "url") ?: return@mapNotNull null
@@ -153,12 +193,17 @@ class YouTubeRepository @Inject constructor(
 
                 if (bestAudio != null) {
                     val (audioUrl, _, _) = bestAudio
-                    return@withContext track.copy(
-                        streamUrl = audioUrl,
-                        durationMs = (JsonExtractor.extractLong(raw, "duration") ?: 0L) * 1000L,
-                        thumbnailUrl = track.thumbnailUrl.ifEmpty { JsonExtractor.extractString(raw, "thumbnailUrl") ?: "" },
-                        artist = track.artist.ifEmpty { JsonExtractor.extractString(raw, "uploader") ?: "Unknown" },
-                        title = track.title.ifEmpty { JsonExtractor.extractString(raw, "title") ?: track.title },
+                    Log.i(TAG, "resolveStream SUCCESS via Piped ($instance)")
+                    return@withContext ResolveResult(
+                        track = track.copy(
+                            streamUrl = audioUrl,
+                            durationMs = (JsonExtractor.extractLong(raw, "duration") ?: 0L) * 1000L,
+                            thumbnailUrl = track.thumbnailUrl.ifEmpty { JsonExtractor.extractString(raw, "thumbnailUrl") ?: "" },
+                            artist = track.artist.ifEmpty { JsonExtractor.extractString(raw, "uploader") ?: "Unknown" },
+                            title = track.title.ifEmpty { JsonExtractor.extractString(raw, "title") ?: track.title },
+                        ),
+                        source = "Piped/${instance.substringAfterLast("/")}",
+                        success = true,
                     )
                 }
 
@@ -169,16 +214,29 @@ class YouTubeRepository @Inject constructor(
                     JsonExtractor.extractBool(vs, "videoOnly") == false
                 }
                 if (videoWithAudio != null) {
-                    return@withContext track.copy(
-                        streamUrl = JsonExtractor.extractString(videoWithAudio, "url"),
-                        durationMs = (JsonExtractor.extractLong(raw, "duration") ?: 0L) * 1000L,
-                        thumbnailUrl = track.thumbnailUrl.ifEmpty { JsonExtractor.extractString(raw, "thumbnailUrl") ?: "" },
+                    Log.i(TAG, "resolveStream SUCCESS via Piped video ($instance)")
+                    return@withContext ResolveResult(
+                        track = track.copy(
+                            streamUrl = JsonExtractor.extractString(videoWithAudio, "url"),
+                            durationMs = (JsonExtractor.extractLong(raw, "duration") ?: 0L) * 1000L,
+                            thumbnailUrl = track.thumbnailUrl.ifEmpty { JsonExtractor.extractString(raw, "thumbnailUrl") ?: "" },
+                        ),
+                        source = "Piped-video/${instance.substringAfterLast("/")}",
+                        success = true,
                     )
                 }
-            } catch (e: Exception) { continue }
+            } catch (e: Exception) {
+                Log.w(TAG, "resolveStream Piped $instance failed: ${e.message}")
+            }
         }
 
-        null
+        Log.w(TAG, "resolveStream: ALL sources FAILED for videoId=$videoId")
+        ResolveResult(
+            track = track,
+            source = "nenhuma",
+            success = false,
+            error = "Todas as fontes falharam (Innertube, NewPipe, Piped). YouTube pode estar bloqueando seu IP. Tente outra música."
+        )
     }
 
     private fun tryPipedSearch(instance: String, query: String): SearchResults {
@@ -220,4 +278,15 @@ class YouTubeRepository @Inject constructor(
         if (url.length == 11 && url.all { it.isLetterOrDigit() || it == '_' || it == '-' }) return url
         return null
     }
+
+    companion object {
+        private const val TAG = "YouTubeRepository"
+    }
 }
+
+data class ResolveResult(
+    val track: Track,
+    val source: String,
+    val success: Boolean,
+    val error: String? = null,
+)

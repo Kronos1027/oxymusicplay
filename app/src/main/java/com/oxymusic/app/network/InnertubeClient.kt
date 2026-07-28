@@ -1,5 +1,6 @@
 package com.oxymusic.app.network
 
+import android.util.Log
 import com.oxymusic.app.model.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,10 +20,10 @@ import javax.inject.Singleton
  * This is the same approach InnerTune / RiMusic / ViMusic use:
  * - Uses YouTube's public internal API key (no auth needed)
  * - Anonymous access works for search (just needs proper client headers)
- * - Returns same data the YouTube app itself sees
  *
- * No poToken needed for search. Player endpoint may require poToken on some IPs,
- * but search always works.
+ * For STREAM URLS: tries multiple client types (WEB, ANDROID_VR, ANDROID_TESTSUITE)
+ * because YouTube blocks some clients based on IP reputation. Residential IPs
+ * (user's phone) typically work with WEB client.
  */
 @Singleton
 class InnertubeClient @Inject constructor() {
@@ -61,26 +62,142 @@ class InnertubeClient @Inject constructor() {
                 .build()
 
             client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext emptyList()
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "search HTTP ${resp.code}")
+                    return@withContext emptyList()
+                }
                 val raw = resp.body?.string() ?: return@withContext emptyList()
                 parseSearchResults(raw)
             }
         } catch (e: Exception) {
+            Log.e(TAG, "search error", e)
             emptyList()
         }
     }
 
     /**
-     * Get trending videos in a region. Uses WEB client for browse endpoint.
+     * Resolve stream URL via Innertube player endpoint.
+     * Tries multiple clients because YouTube blocks some based on IP.
+     *
+     * @return Triple<streamUrl, durationMs, sourceLabel> or null if all clients fail
      */
-    suspend fun trending(region: String = "BR"): List<Track> = withContext(Dispatchers.IO) {
-        try {
-            // Use Piped for trending (more reliable than Innertube browse)
-            // This is delegated to YouTubeRepository
-            emptyList()
-        } catch (e: Exception) {
-            emptyList()
+    suspend fun resolveStream(videoId: String): ResolvedStream? = withContext(Dispatchers.IO) {
+        // Try multiple client types in order of likelihood to work
+        val clients = listOf(
+            "WEB" to "2.20250101.00.00",
+            "ANDROID_VR" to "1.60.30",
+            "ANDROID_TESTSUITE" to "1.9",
+            "ANDROID" to "20.10.38",
+            "IOS" to "20.10.38",
+        )
+
+        for ((clientName, clientVersion) in clients) {
+            try {
+                val result = tryClient(videoId, clientName, clientVersion)
+                if (result != null) {
+                    Log.i(TAG, "resolveStream SUCCESS with client=$clientName")
+                    return@withContext result.copy(sourceLabel = "Innertube/$clientName")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "client $clientName failed: ${e.message}")
+            }
         }
+        Log.w(TAG, "resolveStream: ALL clients failed")
+        null
+    }
+
+    private fun tryClient(videoId: String, clientName: String, clientVersion: String): ResolvedStream? {
+        val context = JSONObject().apply {
+            put("client", JSONObject().apply {
+                put("clientName", clientName)
+                put("clientVersion", clientVersion)
+                put("hl", "pt")
+                put("gl", "BR")
+            })
+        }
+        val body = JSONObject().apply {
+            put("context", context)
+            put("videoId", videoId)
+            put("playbackContext", JSONObject().apply {
+                put("contentPlaybackContext", JSONObject().apply {
+                    put("html5Preference", "HTML5_PREF_WANTS")
+                })
+            })
+        }.toString()
+
+        val userAgent = when (clientName) {
+            "WEB" -> "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
+            "IOS" -> "com.google.ios.youtube/20.10.38 (iPhone; iOS 17; scale=2)"
+            "ANDROID", "ANDROID_VR", "ANDROID_TESTSUITE" -> "com.google.android.youtube/20.10.38 (Linux; U; Android 13)"
+            else -> "Mozilla/5.0"
+        }
+
+        val req = Request.Builder()
+            .url("$baseUrl/player?key=$apiKey")
+            .post(body.toRequestBody("application/json".toMediaType()))
+            .header("User-Agent", userAgent)
+            .header("Content-Type", "application/json")
+            .build()
+
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                Log.w(TAG, "$clientName HTTP ${resp.code}")
+                return null
+            }
+            val raw = resp.body?.string() ?: return null
+            return parsePlayerResponse(raw, clientName)
+        }
+    }
+
+    private fun parsePlayerResponse(raw: String, clientName: String): ResolvedStream? {
+        try {
+            val root = JSONObject(raw)
+            val status = root.optJSONObject("playabilityStatus")?.optString("status", "") ?: ""
+            if (status != "OK") {
+                val reason = root.optJSONObject("playabilityStatus")?.optString("reason", "") ?: ""
+                Log.w(TAG, "$clientName playabilityStatus=$status reason=$reason")
+                return null
+            }
+
+            val sd = root.optJSONObject("streamingData") ?: return null
+            val duration = sd.optLong("durationInSeconds", 0L) * 1000L
+            val adaptive = sd.optJSONArray("adaptiveFormats") ?: JSONArray()
+            val formats = sd.optJSONArray("formats") ?: JSONArray()
+
+            // Find best audio-only stream
+            var bestAudio: String? = null
+            var bestBitrate = 0
+            for (i in 0 until adaptive.length()) {
+                val item = adaptive.optJSONObject(i) ?: continue
+                val mime = item.optString("mimeType", "")
+                if (!mime.contains("audio")) continue
+                val bitrate = item.optInt("bitrate", 0)
+                val url = item.optString("url", "").ifEmpty { null }
+                if (url != null && bitrate > bestBitrate) {
+                    bestBitrate = bitrate
+                    bestAudio = url
+                }
+            }
+
+            // Fallback to muxed formats (video+audio in one file)
+            if (bestAudio == null) {
+                for (i in 0 until formats.length()) {
+                    val item = formats.optJSONObject(i) ?: continue
+                    val url = item.optString("url", "").ifEmpty { null }
+                    if (url != null) {
+                        bestAudio = url
+                        break
+                    }
+                }
+            }
+
+            if (bestAudio != null) {
+                return ResolvedStream(streamUrl = bestAudio, durationMs = duration)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "$clientName parse error", e)
+        }
+        return null
     }
 
     /**
@@ -108,7 +225,7 @@ class InnertubeClient @Inject constructor() {
                 }
             }
         } catch (e: Exception) {
-            // ignore parse errors
+            Log.e(TAG, "parseSearchResults error", e)
         }
         return tracks
     }
@@ -116,7 +233,6 @@ class InnertubeClient @Inject constructor() {
     private fun parseCompactVideo(v: JSONObject): Track? {
         val videoId = v.optString("videoId").ifEmpty { return null }
 
-        // Title — runs joined
         val title = StringBuilder()
         v.optJSONObject("title")?.optJSONArray("runs")?.let { runs ->
             for (i in 0 until runs.length()) {
@@ -128,18 +244,15 @@ class InnertubeClient @Inject constructor() {
         }
         if (title.isEmpty()) return null
 
-        // Channel name
         val channel = v.optJSONObject("longBylineText")?.optJSONArray("runs")?.let { runs ->
             runs.optJSONObject(0)?.optString("text", "") ?: ""
         } ?: v.optJSONObject("shortBylineText")?.optJSONArray("runs")?.let { runs ->
             runs.optJSONObject(0)?.optString("text", "") ?: ""
         } ?: "Unknown"
 
-        // Duration — lengthText.simpleText like "4:03"
         val durationStr = v.optJSONObject("lengthText")?.optString("simpleText", "") ?: ""
         val durationMs = parseDuration(durationStr)
 
-        // Thumbnail — take the highest-quality one
         val thumbs = v.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
         val thumb = if (thumbs != null && thumbs.length() > 0) {
             thumbs.optJSONObject(thumbs.length() - 1)?.optString("url", "") ?: ""
@@ -165,4 +278,14 @@ class InnertubeClient @Inject constructor() {
             } * 1000L
         } catch (e: Exception) { 0L }
     }
+
+    companion object {
+        private const val TAG = "InnertubeClient"
+    }
 }
+
+data class ResolvedStream(
+    val streamUrl: String,
+    val durationMs: Long,
+    val sourceLabel: String = "Innertube",
+)
