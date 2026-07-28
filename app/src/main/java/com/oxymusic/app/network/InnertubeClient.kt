@@ -161,10 +161,12 @@ class InnertubeClient @Inject constructor() {
             return@withContext result.copy(sourceLabel = "Innertube/ANDROID")
         }
 
-        // 5. Fallbacks
+        // 5. Fallbacks — NOTE: WEB removed because YouTube made it SABR-only in 2025/2026
+        // (Server Adaptive Bitrate — returns DASH manifests instead of direct HTTP URLs that
+        // ExoPlayer can play). Only ANDROID_VR and MWEB remain as fallbacks.
+        // See: NewPipeExtractor release notes (issue #1297 — "do not use WEB client for stream URLs anymore")
         for ((clientName, clientVersion, ua) in listOf(
             Triple("ANDROID_VR", "1.65.10", "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; Quest 2 Build/SQ3A.220605.009.A1)"),
-            Triple("WEB", "2.20260623.01.00", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
             Triple("MWEB", "2.20260205.04.01", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
         )) {
             try {

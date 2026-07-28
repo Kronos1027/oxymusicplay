@@ -3,6 +3,55 @@
 Todos os lançamentos notáveis do OxyMusic serão documentados aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
+## [1.13.0] — 2026-07-28
+
+### 🐛 Corrigido (poToken via WebView — fix definitivo do HTTP 403)
+
+**Causa raiz confirmada**: desde 2025/2026 o YouTube exige um **poToken** (proof-of-origin token)
+gerado pelo BotGuard do Google para permitir o download real do stream de áudio. Sem ele, o
+YouTube retorna a URL normalmente mas responde com **HTTP 403** quando o ExoPlayer tenta baixar.
+Exatamente o sintoma reportado.
+
+### ✨ Adicionado
+
+- **PoToken provider via WebView** (port do NewPipe oficial, PR #11955):
+  - `PoTokenWebView.kt` — roda o script BotGuard do YouTube dentro de uma `android.webkit.WebView`
+    invisível/headless (system WebView, presente em qualquer dispositivo com Play Services)
+  - `PoTokenProviderImpl.kt` — implementa `PoTokenProvider` do NewPipeExtractor, com cache do
+    token por `visitorData` e recriação automática quando expira
+  - `JavaScriptUtil.kt` — parsing dos desafios BotGuard (decodificação base64, descramble)
+  - `po_token.html` asset — VM BotGuard carregada dentro da WebView
+  - Registrado no `NewPipe.init()` do `YouTubeRepository` (uma única vez na inicialização)
+  - Tratamento de erro: em ROMs sem WebView do sistema, loga warning e continua sem poToken
+    (não crasha, não trava o app — apenas pode voltar a ter 403 em algumas faixas)
+
+- **Fallback automático em 403 durante playback**:
+  - `YouTubeRepository.resolveStream()` agora aceita `excludeSources: Set<String>`
+  - `PlayerViewModel` detecta erro 403 no `onPlayerError` do ExoPlayer e automaticamente
+    chama `resolveStream()` de novo excluindo a fonte que acabou de falhar
+  - Só mostra erro final ao usuário se TODAS as fontes falharem (incluindo retry)
+
+### 🔧 Mudado
+
+- **Removido client WEB do `InnertubeClient`**:
+  - YouTube tornou o client WEB SABR-only (Server Adaptive Bitrate) em 2025/2026
+  - SABR retorna DASH manifests em vez de URLs HTTP diretas — ExoPlayer não consegue tocar
+  - Mantidos ANDROID_VR e MWEB como fallbacks (revalidar periodicamente)
+  - Referência: NewPipeExtractor issue #1297
+
+- **NewPipeExtractor mantido em v0.26.4** (já é a última estável, com suporte a PoTokenProvider)
+  - Verificado: v0.26.4 é a release mais recente (20/07/2026)
+
+### 📦 Dependências
+- Adicionada `androidx.webkit:webkit:1.12.1` (necessária para `WebSettingsCompat`/`WebViewFeature`)
+
+### 🎯 Critérios de aceite
+- ✅ Buscar "Nevada Nightcore Rock Version" e tocar — não deve mais aparecer 403
+- ✅ Se uma fonte específica falhar (ex: Piped fora do ar), app tenta próxima automaticamente
+- ✅ Erro final só aparece se TODAS as fontes (incluindo com poToken) falharem
+- ✅ Sem regressão no fluxo de busca nem no "Testar playback (sample MP3)"
+- ✅ 100% gratuito — sem API keys pagas, sem dependências proprietárias
+
 ## [1.12.0] — 2026-07-28
 
 ### 🐛 Corrigido (análise do Claude aplicada)

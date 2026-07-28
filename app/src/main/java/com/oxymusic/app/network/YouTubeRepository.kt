@@ -3,6 +3,7 @@ package com.oxymusic.app.network
 import android.util.Log
 import com.oxymusic.app.model.SearchResults
 import com.oxymusic.app.model.Track
+import com.oxymusic.app.potoken.PoTokenProviderImpl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -10,9 +11,11 @@ import okhttp3.Request
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.services.youtube.YoutubeService
+import org.schabi.newpipe.extractor.services.youtube.extractors.YoutubeStreamExtractor
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import javax.inject.Inject
 import javax.inject.Singleton
+import dagger.hilt.android.qualifiers.ApplicationContext
 
 /**
  * Multi-source YouTube client.
@@ -33,13 +36,29 @@ import javax.inject.Singleton
 @Singleton
 class YouTubeRepository @Inject constructor(
     private val innertube: InnertubeClient,
+    @ApplicationContext private val appContext: android.content.Context,
 ) {
 
     private val client = OkHttpClient.Builder().build()
     private val service: YoutubeService = ServiceList.YouTube as YoutubeService
 
     init {
-        try { NewPipe.init(OxyHttpDownloader()) } catch (e: Throwable) {}
+        try {
+            NewPipe.init(OxyHttpDownloader())
+            // Register PoTokenProvider — needed since 2025 because YouTube requires poToken
+            // for stream URLs to actually download (without it, URLs are returned but return
+            // HTTP 403 when ExoPlayer tries to fetch them).
+            // PoTokenProviderImpl uses a system WebView to run BotGuard. If WebView is missing
+            // or broken, it gracefully returns null and the extractor falls back to no-poToken.
+            try {
+                YoutubeStreamExtractor.setPoTokenProvider(PoTokenProviderImpl(appContext))
+                Log.i(TAG, "PoTokenProvider registered")
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to register PoTokenProvider: ${e.message} — continuing without poToken")
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "NewPipe init failed", e)
+        }
     }
 
     private val pipedInstances = listOf(
@@ -146,126 +165,136 @@ class YouTubeRepository @Inject constructor(
     /**
      * Resolve stream URL. Returns ResolveResult with details about which source worked.
      *
-     * SOURCE ORDER (corrected based on Claude's analysis):
+     * SOURCE ORDER (corrected based on Claude's analysis + v1.13.0 spec):
      * 1. NewPipeExtractor FIRST — it can decipher signatureCipher (YouTube now encrypts ~everything in 2025/2026)
+     *    AND has PoTokenProvider registered (since v1.13.0) — so its URLs work without 403
      * 2. Innertube as fast-path — direct URLs without signatureCipher, may work without poToken
      * 3. Piped LAST — proxy that may add latency and IP-mismatch issues
      *
      * Validates each URL with GET+Range (NOT HEAD — googlevideo rejects HEAD).
+     *
+     * @param excludeSources set of source names to skip (e.g. {"NewPipe"} after a mid-playback 403)
      */
-    suspend fun resolveStream(track: Track): ResolveResult = withContext(Dispatchers.IO) {
+    suspend fun resolveStream(track: Track, excludeSources: Set<String> = emptySet()): ResolveResult = withContext(Dispatchers.IO) {
         val videoId = extractVideoId(track.id) ?: track.id
-        Log.i(TAG, "resolveStream: videoId=$videoId title='${track.title}'")
+        Log.i(TAG, "resolveStream: videoId=$videoId title='${track.title}' excludeSources=$excludeSources")
 
-        // 1. NewPipeExtractor FIRST — handles signatureCipher deciphering
-        // YouTube started encrypting nearly all streams in 2025/2026 (well documented in yt-dlp issues)
-        // NewPipeExtractor has built-in JS deciphering, so it should be the primary source now
-        try {
-            Log.i(TAG, "Trying NewPipeExtractor (primary)...")
-            val extractor = service.getStreamExtractor("https://www.youtube.com/watch?v=$videoId")
-            extractor.fetchPage()
-            val info = StreamInfo.getInfo(extractor)
-            val audio = info.audioStreams
-                .filter { it.url != null }
-                .maxByOrNull { it.bitrate }
-            if (audio?.url != null) {
-                val streamUrl = audio.url!!
-                Log.i(TAG, "NewPipe got URL, validating with GET+Range...")
-                val valid = innertube.validateStreamUrl(streamUrl)
-                if (valid) {
-                    Log.i(TAG, "resolveStream SUCCESS via NewPipe (URL validated)")
-                    return@withContext ResolveResult(
-                        track = track.copy(
-                            streamUrl = streamUrl,
-                            durationMs = info.duration * 1000L,
-                            thumbnailUrl = track.thumbnailUrl.ifEmpty { info.thumbnails.maxByOrNull { it.height * it.width }?.url ?: "" },
-                            artist = track.artist.ifEmpty { info.uploaderName ?: "Unknown" },
-                            title = track.title.ifEmpty { info.name ?: track.title },
-                        ),
-                        source = "NewPipe",
-                        success = true,
-                    )
-                } else {
-                    Log.w(TAG, "NewPipe URL validation FAILED — falling through to Innertube")
-                }
-            } else {
-                Log.w(TAG, "NewPipe returned no audio stream URL")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "resolveStream NewPipe failed: ${e.message}")
-        }
-
-        // 2. Innertube as fast-path — direct URLs (may fail if YouTube requires poToken)
-        try {
-            Log.i(TAG, "Trying Innertube (fast-path)...")
-            val result = innertube.resolveStream(videoId)
-            if (result != null) {
-                Log.i(TAG, "Innertube got URL, validating with GET+Range...")
-                val valid = innertube.validateStreamUrl(result.streamUrl)
-                if (valid) {
-                    Log.i(TAG, "resolveStream SUCCESS via ${result.sourceLabel} (URL validated)")
-                    return@withContext ResolveResult(
-                        track = track.copy(
-                            streamUrl = result.streamUrl,
-                            durationMs = if (result.durationMs > 0) result.durationMs else track.durationMs,
-                        ),
-                        source = result.sourceLabel,
-                        success = true,
-                    )
-                } else {
-                    Log.w(TAG, "Innertube URL validation FAILED — falling through to Piped")
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "resolveStream Innertube failed: ${e.message}")
-        }
-
-        // 3. Piped LAST — proxy, may have IP mismatch issues
-        for (instance in pipedInstances) {
+        // 1. NewPipeExtractor FIRST — handles signatureCipher deciphering + PoToken
+        if ("NewPipe" !in excludeSources) {
             try {
-                Log.i(TAG, "Trying Piped $instance (last resort)...")
-                val url = "$instance/streams/$videoId"
-                val raw = httpGet(url) ?: continue
-                val audioStr = JsonExtractor.extractArray(raw, "audioStreams") ?: emptyList()
-                val bestAudio = audioStr.mapNotNull { itemStr ->
-                    val u = JsonExtractor.extractString(itemStr, "url") ?: return@mapNotNull null
-                    val mime = JsonExtractor.extractString(itemStr, "mimeType") ?: ""
-                    if (!mime.contains("audio")) return@mapNotNull null
-                    val bitrate = JsonExtractor.extractLong(itemStr, "bitrate") ?: 0L
-                    Triple(u, bitrate, itemStr)
-                }.maxByOrNull { it.second }
-
-                if (bestAudio != null) {
-                    val (audioUrl, _, _) = bestAudio
-                    val valid = innertube.validateStreamUrl(audioUrl)
+                Log.i(TAG, "Trying NewPipeExtractor (primary)...")
+                val extractor = service.getStreamExtractor("https://www.youtube.com/watch?v=$videoId")
+                extractor.fetchPage()
+                val info = StreamInfo.getInfo(extractor)
+                val audio = info.audioStreams
+                    .filter { it.url != null }
+                    .maxByOrNull { it.bitrate }
+                if (audio?.url != null) {
+                    val streamUrl = audio.url!!
+                    Log.i(TAG, "NewPipe got URL, validating with GET+Range...")
+                    val valid = innertube.validateStreamUrl(streamUrl)
                     if (valid) {
-                        Log.i(TAG, "resolveStream SUCCESS via Piped ($instance) (URL validated)")
+                        Log.i(TAG, "resolveStream SUCCESS via NewPipe (URL validated)")
                         return@withContext ResolveResult(
                             track = track.copy(
-                                streamUrl = audioUrl,
-                                durationMs = (JsonExtractor.extractLong(raw, "duration") ?: 0L) * 1000L,
-                                thumbnailUrl = track.thumbnailUrl.ifEmpty { JsonExtractor.extractString(raw, "thumbnailUrl") ?: "" },
-                                artist = track.artist.ifEmpty { JsonExtractor.extractString(raw, "uploader") ?: "Unknown" },
-                                title = track.title.ifEmpty { JsonExtractor.extractString(raw, "title") ?: track.title },
+                                streamUrl = streamUrl,
+                                durationMs = info.duration * 1000L,
+                                thumbnailUrl = track.thumbnailUrl.ifEmpty { info.thumbnails.maxByOrNull { it.height * it.width }?.url ?: "" },
+                                artist = track.artist.ifEmpty { info.uploaderName ?: "Unknown" },
+                                title = track.title.ifEmpty { info.name ?: track.title },
                             ),
-                            source = "Piped/${instance.substringAfterLast("/")}",
+                            source = "NewPipe",
                             success = true,
                         )
                     } else {
-                        Log.w(TAG, "Piped $instance URL validation FAILED")
+                        Log.w(TAG, "NewPipe URL validation FAILED — falling through")
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "resolveStream Piped $instance failed: ${e.message}")
+                Log.w(TAG, "resolveStream NewPipe failed: ${e.message}")
             }
         }
 
-        Log.w(TAG, "resolveStream: ALL sources FAILED for videoId=$videoId")
+        // 2. Innertube as fast-path
+        if (!excludeSources.any { it.startsWith("Innertube") }) {
+            try {
+                Log.i(TAG, "Trying Innertube (fast-path)...")
+                val result = innertube.resolveStream(videoId)
+                if (result != null) {
+                    Log.i(TAG, "Innertube got URL, validating with GET+Range...")
+                    val valid = innertube.validateStreamUrl(result.streamUrl)
+                    if (valid) {
+                        Log.i(TAG, "resolveStream SUCCESS via ${result.sourceLabel} (URL validated)")
+                        return@withContext ResolveResult(
+                            track = track.copy(
+                                streamUrl = result.streamUrl,
+                                durationMs = if (result.durationMs > 0) result.durationMs else track.durationMs,
+                            ),
+                            source = result.sourceLabel,
+                            success = true,
+                        )
+                    } else {
+                        Log.w(TAG, "Innertube URL validation FAILED — falling through")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "resolveStream Innertube failed: ${e.message}")
+            }
+        }
+
+        // 3. Piped LAST
+        if (!excludeSources.any { it.startsWith("Piped") }) {
+            for (instance in pipedInstances) {
+                val sourceName = "Piped/${instance.substringAfterLast("/")}"
+                if (sourceName in excludeSources) continue
+                try {
+                    Log.i(TAG, "Trying $sourceName (last resort)...")
+                    val url = "$instance/streams/$videoId"
+                    val raw = httpGet(url) ?: continue
+                    val audioStr = JsonExtractor.extractArray(raw, "audioStreams") ?: emptyList()
+                    val bestAudio = audioStr.mapNotNull { itemStr ->
+                        val u = JsonExtractor.extractString(itemStr, "url") ?: return@mapNotNull null
+                        val mime = JsonExtractor.extractString(itemStr, "mimeType") ?: ""
+                        if (!mime.contains("audio")) return@mapNotNull null
+                        val bitrate = JsonExtractor.extractLong(itemStr, "bitrate") ?: 0L
+                        Triple(u, bitrate, itemStr)
+                    }.maxByOrNull { it.second }
+
+                    if (bestAudio != null) {
+                        val (audioUrl, _, _) = bestAudio
+                        val valid = innertube.validateStreamUrl(audioUrl)
+                        if (valid) {
+                            Log.i(TAG, "resolveStream SUCCESS via $sourceName (URL validated)")
+                            return@withContext ResolveResult(
+                                track = track.copy(
+                                    streamUrl = audioUrl,
+                                    durationMs = (JsonExtractor.extractLong(raw, "duration") ?: 0L) * 1000L,
+                                    thumbnailUrl = track.thumbnailUrl.ifEmpty { JsonExtractor.extractString(raw, "thumbnailUrl") ?: "" },
+                                    artist = track.artist.ifEmpty { JsonExtractor.extractString(raw, "uploader") ?: "Unknown" },
+                                    title = track.title.ifEmpty { JsonExtractor.extractString(raw, "title") ?: track.title },
+                                ),
+                                source = sourceName,
+                                success = true,
+                            )
+                        } else {
+                            Log.w(TAG, "$sourceName URL validation FAILED")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "resolveStream $sourceName failed: ${e.message}")
+                }
+            }
+        }
+
+        Log.w(TAG, "resolveStream: ALL sources FAILED for videoId=$videoId (tried with excludes=$excludeSources)")
         ResolveResult(
             track = track,
             source = "nenhuma",
             success = false,
-            error = "Todas as fontes falharam. Tente outra música."
+            error = if (excludeSources.isNotEmpty())
+                "Todas as fontes falharam (incluindo retry após 403). Tente outra música."
+            else
+                "Todas as fontes falharam. Tente outra música."
         )
     }
 

@@ -63,6 +63,10 @@ class PlayerViewModel @Inject constructor(
         _debugLog.value = _debugLog.value + "\n" + msg
     }
 
+    // Tracks which sources have already failed for the current track (for mid-playback 403 retry)
+    private val failedSources = mutableSetOf<String>()
+    private var currentResolvingTrackId: String? = null
+
     init {
         // Position ticker
         viewModelScope.launch {
@@ -81,11 +85,30 @@ class PlayerViewModel @Inject constructor(
                 if (sid != 0) { visualizer.attach(sid); attached = true; log("Visualizer attached to session $sid") }
             }
         }
-        // Forward playback errors to errorMessage
+        // Forward playback errors to errorMessage — with mid-playback 403 retry logic
         viewModelScope.launch {
             playback.lastError.collect { e ->
                 if (e != null) {
                     log("PLAYBACK ERROR: $e")
+                    // Detect HTTP 403 mid-playback — try next source before showing error
+                    val is403 = e.contains("403") || e.contains("BAD_HTTP_STATUS")
+                    val currentTrack = currentTrack.value
+                    val lastSrc = _lastSource.value
+                    if (is403 && currentTrack != null && lastSrc != null && lastSrc != "test-mp3") {
+                        log("403 detected mid-playback — adding '$lastSrc' to failedSources and retrying with next source")
+                        failedSources.add(lastSrc)
+                        // Retry resolveStream excluding the failed source
+                        val retryResult = youtube.resolveStream(currentTrack, excludeSources = failedSources.toSet())
+                        if (retryResult.success && !retryResult.track.streamUrl.isNullOrEmpty()) {
+                            log("Retry SUCCESS via ${retryResult.source} — playing")
+                            _lastSource.value = retryResult.source
+                            _mascotMessage.value = "Tentando via ${retryResult.source} 🔄"
+                            playback.playTrack(retryResult.track)
+                            return@collect
+                        } else {
+                            log("Retry FAILED — showing error to user")
+                        }
+                    }
                     _errorMessage.value = e
                 }
             }
@@ -94,9 +117,11 @@ class PlayerViewModel @Inject constructor(
 
     fun playTrack(track: Track) {
         log("▶ playTrack: ${track.title} - ${track.artist} (id=${track.id})")
+        failedSources.clear()  // reset failed sources for new track
+        currentResolvingTrackId = track.id
         viewModelScope.launch {
             _resolving.value = true
-            _resolvingSource.value = "Innertube → NewPipe → Piped"
+            _resolvingSource.value = "NewPipe → Innertube → Piped"
             _errorMessage.value = null
             _mascotMessage.value = "Resolvendo stream… ⏳"
             try {
@@ -115,6 +140,7 @@ class PlayerViewModel @Inject constructor(
                 }
 
                 _lastSource.value = result.source
+                failedSources.add(result.source)  // mark this source as "tried" for retry logic
                 _mascotMessage.value = "Tocando via ${result.source}! 🎶"
                 log("Calling playback.playTrack with streamUrl=${result.track.streamUrl!!.take(80)}...")
                 playback.playTrack(result.track)

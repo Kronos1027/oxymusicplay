@@ -14,8 +14,8 @@ android {
         applicationId = "com.oxymusic.app"
         minSdk = 31
         targetSdk = 35
-        versionCode = 12
-        versionName = "1.12.0-mvp"
+        versionCode = 13
+        versionName = "1.13.0-mvp"
         vectorDrawables { useSupportLibrary = true }
     }
     buildTypes {
@@ -70,6 +70,7 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.coil.gif)
     implementation(libs.androidx.palette)
+    implementation(libs.androidx.webkit)
     implementation(libs.newpipe.extractor)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
