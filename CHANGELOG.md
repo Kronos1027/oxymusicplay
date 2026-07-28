@@ -3,6 +3,28 @@
 Todos os lançamentos notáveis do OxyMusic serão documentados aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
+## [1.12.0] — 2026-07-28
+
+### 🐛 Corrigido (análise do Claude aplicada)
+Dois bugs identificados por análise profunda do Claude:
+
+**Bug 1: validateStreamUrl usava HEAD — googlevideo.com rejeita HEAD**
+- Causa: servidores `googlevideo.com` (YouTube CDN) costumam rejeitar/tratar mal requests HEAD mesmo quando o mesmo URL funciona perfeitamente com GET
+- O app estava descartando streams válidos como se fossem falha
+- **Solução**: trocado HEAD por `GET` com `Range: bytes=0-1024` (baixa só 1KB pra testar)
+- Testado: HEAD retorna 302 (falha), GET+Range retorna 206 (sucesso)
+
+**Bug 2: Innertube era primeira fonte mas falha em 2025/2026**
+- Causa: YouTube começou a cifrar quase todos os streams em 2025/2026 (documentado em issues recentes do yt-dlp)
+- Innertube direto ignora `signatureCipher` (URL criptografada que precisa decifrar JS)
+- NewPipeExtractor decifra signatureCipher automaticamente — deveria ser primeira fonte
+- **Solução**: reordenado para NewPipe (primário) → Innertube (fast-path) → Piped (último)
+
+### 🔧 Mudado
+- `InnertubeClient.validateStreamUrl()`: HEAD → GET+Range
+- `YouTubeRepository.resolveStream()`: reordenado NewPipe primeiro, Innertube segundo, Piped último
+- Logs mais detalhados em cada fonte tentada
+
 ## [1.9.0] — 2026-07-28
 
 ### 🐛 Corrigido

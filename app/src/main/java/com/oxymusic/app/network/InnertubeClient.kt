@@ -188,14 +188,25 @@ class InnertubeClient @Inject constructor() {
 
     /**
      * Validates that a stream URL is actually accessible (returns 2xx or 3xx).
-     * Used to detect 403 (poToken rejection) BEFORE passing to ExoPlayer.
+     *
+     * IMPORTANT: Uses GET with Range: bytes=0-1024 instead of HEAD.
+     * Reason: googlevideo.com (YouTube CDN) often rejects or mishandles HEAD requests
+     * even when the same URL works perfectly with GET. This was causing the app to
+     * discard perfectly valid stream URLs and fall through to "all sources failed".
+     *
+     * With Range: bytes=0-1024, we download only 1KB to test the URL — fast and reliable.
      */
     suspend fun validateStreamUrl(url: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            val req = Request.Builder().url(url).head().build()
+            val req = Request.Builder()
+                .url(url)
+                .get()
+                .header("Range", "bytes=0-1024")
+                .build()
             client.newCall(req).execute().use { resp ->
                 val code = resp.code
                 log("validateStreamUrl HTTP $code for ${url.take(80)}...")
+                // 200, 206 (Partial Content), 2xx, 3xx are all valid
                 code in 200..399
             }
         } catch (e: Exception) {
