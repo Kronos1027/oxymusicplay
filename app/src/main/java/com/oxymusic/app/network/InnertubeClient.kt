@@ -77,23 +77,27 @@ class InnertubeClient @Inject constructor() {
 
     /**
      * Resolve stream URL via Innertube player endpoint.
-     * Tries multiple clients because YouTube blocks some based on IP.
      *
-     * Order matters: ANDROID first (returns direct URLs without signatureCipher,
-     * which work without JS deciphering). WEB returns signatureCipher URLs that
-     * require deciphering and often fail with BAD_HTTP_STATUS.
+     * Order matters: ANDROID_VR first because it returns DIRECT URLs without
+     * signatureCipher AND without poToken requirement. ANDROID (regular) returns
+     * URLs that work from server IPs but get 403 from real Android devices
+     * (YouTube's anti-abuse: expects the request to come with poToken from real app).
      *
      * @return ResolvedStream or null if all clients fail
      */
     suspend fun resolveStream(videoId: String): ResolvedStream? = withContext(Dispatchers.IO) {
-        // Try multiple client types in order of likelihood to work
-        // ANDROID/IOS clients return direct URLs (no signatureCipher) — these are most reliable
+        // Order:
+        // 1. ANDROID_VR — direct URLs, no poToken, no signatureCipher
+        // 2. IOS — direct URLs, often works
+        // 3. ANDROID — direct URLs, but YouTube may 403 without poToken
+        // 4. ANDROID_TESTSUITE — alternate client
+        // 5. WEB — last resort, may need signature deciphering
         val clients = listOf(
-            "ANDROID" to "20.10.38",       // returns direct URLs, works on most IPs
-            "IOS" to "20.10.38",           // returns direct URLs, good fallback
-            "ANDROID_VR" to "1.60.30",     // alternate Android client
-            "ANDROID_TESTSUITE" to "1.9",  // developer client
-            "WEB" to "2.20250101.00.00",   // last resort — may need signature deciphering
+            "ANDROID_VR" to "1.60.30",     // best for streaming — direct URLs, no poToken
+            "IOS" to "20.10.38",           // direct URLs, good fallback
+            "ANDROID_TESTSUITE" to "1.9",  // alternate
+            "ANDROID" to "20.10.38",       // may 403 without poToken
+            "WEB" to "2.20250101.00.00",   // last resort
         )
 
         for ((clientName, clientVersion) in clients) {
@@ -109,6 +113,24 @@ class InnertubeClient @Inject constructor() {
         }
         Log.w(TAG, "resolveStream: ALL clients failed")
         null
+    }
+
+    /**
+     * Validates that a stream URL is actually accessible (returns 2xx or 3xx).
+     * Used to detect 403 (poToken rejection) BEFORE passing to ExoPlayer.
+     */
+    suspend fun validateStreamUrl(url: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url(url).head().build()
+            client.newCall(req).execute().use { resp ->
+                val code = resp.code
+                Log.i(TAG, "validateStreamUrl HTTP $code for ${url.take(80)}...")
+                code in 200..399
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "validateStreamUrl error: ${e.message}")
+            false
+        }
     }
 
     private fun tryClient(videoId: String, clientName: String, clientVersion: String): ResolvedStream? {

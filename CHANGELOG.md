@@ -3,6 +3,31 @@
 Todos os lançamentos notáveis do OxyMusic serão documentados aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
+## [1.9.0] — 2026-07-28
+
+### 🐛 Corrigido
+- **Bug crítico**: HTTP 403 Forbidden resolvido! Causa raiz DEFINITIVA:
+  - YouTube implementou **PoToken enforcement** em 2024/2025
+  - Client ANDROID regular retorna URLs que exigem PoToken → HTTP 403
+  - Client WEB retorna URLs com signatureCipher (precisam decifração JS)
+  - **Solução**: usar client **ANDROID_VR** como primário — retorna URLs DIRETAS sem signatureCipher E sem poToken requirement
+
+### ✨ Adicionado
+- **Validação pré-playback**: HEAD request em cada URL antes de passar pro ExoPlayer
+  - Se URL retornar 403 → automaticamente tenta próxima fonte (NewPipe, Piped)
+  - Detecta erro cedo, sem esperar ExoPlayer falhar
+- `InnertubeClient.validateStreamUrl()` — método novo pra validar URLs
+
+### 🔧 Mudado
+- Ordem dos clients Innertube atualizada:
+  1. **ANDROID_VR** ← primário (funciona sem poToken, URLs diretas)
+  2. IOS
+  3. ANDROID_TESTSUITE
+  4. ANDROID (pode 403 sem poToken)
+  5. WEB (último resort)
+- `YouTubeRepository.resolveStream()` agora valida cada URL antes de retornar
+- Logs mais detalhados em cada etapa de validação
+
 ## [1.8.0] — 2026-07-28
 
 ### 🐛 Corrigido

@@ -145,6 +145,7 @@ class YouTubeRepository @Inject constructor(
 
     /**
      * Resolve stream URL. Returns ResolveResult with details about which source worked.
+     * Validates each URL with HEAD request before returning — if 403, tries next source.
      */
     suspend fun resolveStream(track: Track): ResolveResult = withContext(Dispatchers.IO) {
         val videoId = extractVideoId(track.id) ?: track.id
@@ -154,15 +155,21 @@ class YouTubeRepository @Inject constructor(
         try {
             val result = innertube.resolveStream(videoId)
             if (result != null) {
-                Log.i(TAG, "resolveStream SUCCESS via ${result.sourceLabel}")
-                return@withContext ResolveResult(
-                    track = track.copy(
-                        streamUrl = result.streamUrl,
-                        durationMs = if (result.durationMs > 0) result.durationMs else track.durationMs,
-                    ),
-                    source = result.sourceLabel,
-                    success = true,
-                )
+                // Validate URL is accessible (HEAD request)
+                val valid = innertube.validateStreamUrl(result.streamUrl)
+                if (valid) {
+                    Log.i(TAG, "resolveStream SUCCESS via ${result.sourceLabel} (URL validated)")
+                    return@withContext ResolveResult(
+                        track = track.copy(
+                            streamUrl = result.streamUrl,
+                            durationMs = if (result.durationMs > 0) result.durationMs else track.durationMs,
+                        ),
+                        source = result.sourceLabel,
+                        success = true,
+                    )
+                } else {
+                    Log.w(TAG, "resolveStream URL validation FAILED for ${result.sourceLabel} (likely 403/poToken)")
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "resolveStream Innertube failed: ${e.message}")
@@ -177,18 +184,24 @@ class YouTubeRepository @Inject constructor(
                 .filter { it.url != null }
                 .maxByOrNull { it.bitrate }
             if (audio?.url != null) {
-                Log.i(TAG, "resolveStream SUCCESS via NewPipe")
-                return@withContext ResolveResult(
-                    track = track.copy(
-                        streamUrl = audio.url,
-                        durationMs = info.duration * 1000L,
-                        thumbnailUrl = track.thumbnailUrl.ifEmpty { info.thumbnails.maxByOrNull { it.height * it.width }?.url ?: "" },
-                        artist = track.artist.ifEmpty { info.uploaderName ?: "Unknown" },
-                        title = track.title.ifEmpty { info.name ?: track.title },
-                    ),
-                    source = "NewPipe",
-                    success = true,
-                )
+                // Validate
+                val valid = innertube.validateStreamUrl(audio.url!!)
+                if (valid) {
+                    Log.i(TAG, "resolveStream SUCCESS via NewPipe (URL validated)")
+                    return@withContext ResolveResult(
+                        track = track.copy(
+                            streamUrl = audio.url,
+                            durationMs = info.duration * 1000L,
+                            thumbnailUrl = track.thumbnailUrl.ifEmpty { info.thumbnails.maxByOrNull { it.height * it.width }?.url ?: "" },
+                            artist = track.artist.ifEmpty { info.uploaderName ?: "Unknown" },
+                            title = track.title.ifEmpty { info.name ?: track.title },
+                        ),
+                        source = "NewPipe",
+                        success = true,
+                    )
+                } else {
+                    Log.w(TAG, "resolveStream NewPipe URL validation FAILED")
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "resolveStream NewPipe failed: ${e.message}")
@@ -210,37 +223,23 @@ class YouTubeRepository @Inject constructor(
 
                 if (bestAudio != null) {
                     val (audioUrl, _, _) = bestAudio
-                    Log.i(TAG, "resolveStream SUCCESS via Piped ($instance)")
-                    return@withContext ResolveResult(
-                        track = track.copy(
-                            streamUrl = audioUrl,
-                            durationMs = (JsonExtractor.extractLong(raw, "duration") ?: 0L) * 1000L,
-                            thumbnailUrl = track.thumbnailUrl.ifEmpty { JsonExtractor.extractString(raw, "thumbnailUrl") ?: "" },
-                            artist = track.artist.ifEmpty { JsonExtractor.extractString(raw, "uploader") ?: "Unknown" },
-                            title = track.title.ifEmpty { JsonExtractor.extractString(raw, "title") ?: track.title },
-                        ),
-                        source = "Piped/${instance.substringAfterLast("/")}",
-                        success = true,
-                    )
-                }
-
-                // Fallback: video stream with audio (LBRY)
-                val videoStr = JsonExtractor.extractArray(raw, "videoStreams") ?: emptyList()
-                val videoWithAudio = videoStr.firstOrNull { vs ->
-                    JsonExtractor.extractString(vs, "url") != null &&
-                    JsonExtractor.extractBool(vs, "videoOnly") == false
-                }
-                if (videoWithAudio != null) {
-                    Log.i(TAG, "resolveStream SUCCESS via Piped video ($instance)")
-                    return@withContext ResolveResult(
-                        track = track.copy(
-                            streamUrl = JsonExtractor.extractString(videoWithAudio, "url"),
-                            durationMs = (JsonExtractor.extractLong(raw, "duration") ?: 0L) * 1000L,
-                            thumbnailUrl = track.thumbnailUrl.ifEmpty { JsonExtractor.extractString(raw, "thumbnailUrl") ?: "" },
-                        ),
-                        source = "Piped-video/${instance.substringAfterLast("/")}",
-                        success = true,
-                    )
+                    val valid = innertube.validateStreamUrl(audioUrl)
+                    if (valid) {
+                        Log.i(TAG, "resolveStream SUCCESS via Piped ($instance) (URL validated)")
+                        return@withContext ResolveResult(
+                            track = track.copy(
+                                streamUrl = audioUrl,
+                                durationMs = (JsonExtractor.extractLong(raw, "duration") ?: 0L) * 1000L,
+                                thumbnailUrl = track.thumbnailUrl.ifEmpty { JsonExtractor.extractString(raw, "thumbnailUrl") ?: "" },
+                                artist = track.artist.ifEmpty { JsonExtractor.extractString(raw, "uploader") ?: "Unknown" },
+                                title = track.title.ifEmpty { JsonExtractor.extractString(raw, "title") ?: track.title },
+                            ),
+                            source = "Piped/${instance.substringAfterLast("/")}",
+                            success = true,
+                        )
+                    } else {
+                        Log.w(TAG, "resolveStream Piped $instance URL validation FAILED")
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "resolveStream Piped $instance failed: ${e.message}")
@@ -252,7 +251,7 @@ class YouTubeRepository @Inject constructor(
             track = track,
             source = "nenhuma",
             success = false,
-            error = "Todas as fontes falharam (Innertube, NewPipe, Piped). YouTube pode estar bloqueando seu IP. Tente outra música."
+            error = "Todas as fontes falharam. YouTube rejeitou as URLs (403 poToken). Tente outra música."
         )
     }
 
