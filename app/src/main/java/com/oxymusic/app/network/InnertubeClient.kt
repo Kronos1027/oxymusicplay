@@ -79,16 +79,21 @@ class InnertubeClient @Inject constructor() {
      * Resolve stream URL via Innertube player endpoint.
      * Tries multiple clients because YouTube blocks some based on IP.
      *
-     * @return Triple<streamUrl, durationMs, sourceLabel> or null if all clients fail
+     * Order matters: ANDROID first (returns direct URLs without signatureCipher,
+     * which work without JS deciphering). WEB returns signatureCipher URLs that
+     * require deciphering and often fail with BAD_HTTP_STATUS.
+     *
+     * @return ResolvedStream or null if all clients fail
      */
     suspend fun resolveStream(videoId: String): ResolvedStream? = withContext(Dispatchers.IO) {
         // Try multiple client types in order of likelihood to work
+        // ANDROID/IOS clients return direct URLs (no signatureCipher) — these are most reliable
         val clients = listOf(
-            "WEB" to "2.20250101.00.00",
-            "ANDROID_VR" to "1.60.30",
-            "ANDROID_TESTSUITE" to "1.9",
-            "ANDROID" to "20.10.38",
-            "IOS" to "20.10.38",
+            "ANDROID" to "20.10.38",       // returns direct URLs, works on most IPs
+            "IOS" to "20.10.38",           // returns direct URLs, good fallback
+            "ANDROID_VR" to "1.60.30",     // alternate Android client
+            "ANDROID_TESTSUITE" to "1.9",  // developer client
+            "WEB" to "2.20250101.00.00",   // last resort — may need signature deciphering
         )
 
         for ((clientName, clientVersion) in clients) {
@@ -164,25 +169,29 @@ class InnertubeClient @Inject constructor() {
             val adaptive = sd.optJSONArray("adaptiveFormats") ?: JSONArray()
             val formats = sd.optJSONArray("formats") ?: JSONArray()
 
-            // Find best audio-only stream
+            // Find best audio-only stream with DIRECT url (no signatureCipher needed)
+            // signatureCipher URLs require JS deciphering which we don't do — they fail with BAD_HTTP_STATUS
             var bestAudio: String? = null
             var bestBitrate = 0
             for (i in 0 until adaptive.length()) {
                 val item = adaptive.optJSONObject(i) ?: continue
                 val mime = item.optString("mimeType", "")
                 if (!mime.contains("audio")) continue
+                // SKIP signatureCipher URLs — they need deciphering and would fail
+                if (item.has("signatureCipher") || item.has("cipher")) continue
                 val bitrate = item.optInt("bitrate", 0)
-                val url = item.optString("url", "").ifEmpty { null }
-                if (url != null && bitrate > bestBitrate) {
+                val url = item.optString("url", "").ifEmpty { null } ?: continue
+                if (bitrate > bestBitrate) {
                     bestBitrate = bitrate
                     bestAudio = url
                 }
             }
 
-            // Fallback to muxed formats (video+audio in one file)
+            // Fallback to muxed formats (video+audio in one file) — only direct URLs
             if (bestAudio == null) {
                 for (i in 0 until formats.length()) {
                     val item = formats.optJSONObject(i) ?: continue
+                    if (item.has("signatureCipher") || item.has("cipher")) continue
                     val url = item.optString("url", "").ifEmpty { null }
                     if (url != null) {
                         bestAudio = url

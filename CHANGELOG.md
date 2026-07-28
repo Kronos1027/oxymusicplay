@@ -3,6 +3,28 @@
 Todos os lançamentos notáveis do OxyMusic serão documentados aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
+## [1.6.0] — 2026-07-28
+
+### 🐛 Corrigido
+- **Bug crítico**: `ERROR_CODE_IO_BAD_HTTP_STATUS` resolvido! Causa raiz: o client WEB retornava URLs com `signatureCipher` que precisam de decifração JavaScript (que não fazíamos) → ExoPlayer recebia HTTP 403 ao tentar tocar.
+- **Solução**: ANDROID client agora é tentado PRIMEIRO (retorna URLs diretas sem signatureCipher). Adicionado filtro que pula qualquer stream com `signatureCipher` ou `cipher` — só usa URLs que funcionam diretamente.
+- Ordem atual: ANDROID → IOS → ANDROID_VR → ANDROID_TESTSUITE → WEB (último resort)
+
+### ✨ Adicionado (estilo Spotify)
+- **Tela Home**: greeting dinâmico (Bom dia/tarde/noite), trending BR, tocadas recentemente, sugestões de mood
+- **Tela Histórico**: agrupado por data (Hoje, Ontem, Esta semana, etc.) com horário de cada faixa
+- **MiniPlayer**: barra flutuante acima do bottom nav com thumbnail + título + play/pause + skip + progress bar
+- 4 abas: Início / Buscar / Histórico / Ajustes
+- MiniPlayer aparece automaticamente quando uma música está tocando
+- Tocar no MiniPlayer abre o Player completo
+
+### 🎨 Melhorias de design
+- HomeScreen: cards de trending em horizontal scroll, gradient header
+- HistoryScreen: agrupamento por data, empty state bonito, botão limpar
+- MiniPlayer: progress bar fino no topo, animações slide+fade
+- Bottom nav com 4 abas (era 3)
+- Empty states refinados em todas as telas
+
 ## [1.5.0] — 2026-07-28
 
 ### 🐛 Corrigido
