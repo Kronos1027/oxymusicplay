@@ -1,73 +1,92 @@
+/*
+ * Copyright (C) NewPipe Contributors
+ * Licensed under GPLv3 — see https://www.gnu.org/licenses/gpl-3.0.html
+ *
+ * Vendored from https://github.com/TeamNewPipe/NewPipe (PR #11955)
+ * Adapted for OxyMusic: package renamed, otherwise verbatim.
+ */
 package com.oxymusic.app.potoken
 
-import org.json.JSONArray
-import org.json.JSONObject
-import android.util.Base64
+import com.grack.nanojson.JsonObject
+import com.grack.nanojson.JsonParser
+import com.grack.nanojson.JsonWriter
+import okio.ByteString.Companion.decodeBase64
+import okio.ByteString.Companion.toByteString
 
 /**
- * Parses the raw challenge data obtained from the Create endpoint and returns a JSON object
- * string that can be embedded in a JavaScript snippet.
- *
- * Ported from NewPipe's JavaScriptUtil.kt, using org.json (Android built-in) instead of nanojson.
+ * Parses the raw challenge data obtained from the Create endpoint and returns an object that can be
+ * embedded in a JavaScript snippet.
  */
 fun parseChallengeData(rawChallengeData: String): String {
-    val scrambled = JSONArray(rawChallengeData)
+    val scrambled = JsonParser.array().from(rawChallengeData)
 
-    val challengeData = if (scrambled.length() > 1 && scrambled.opt(1) is String) {
+    val challengeData = if (scrambled.size > 1 && scrambled.isString(1)) {
         val descrambled = descramble(scrambled.getString(1))
-        JSONArray(descrambled)
+        JsonParser.array().from(descrambled)
     } else {
-        scrambled.getJSONArray(0)
+        scrambled.getArray(0)
     }
 
     val messageId = challengeData.getString(0)
     val interpreterHash = challengeData.getString(3)
     val program = challengeData.getString(4)
     val globalName = challengeData.getString(5)
-    val clientExperimentsStateBlob = challengeData.optString(7, "")
+    val clientExperimentsStateBlob = challengeData.getString(7)
 
-    val privateDoNotAccessOrElseSafeScriptWrappedValue = challengeData.optJSONArray(1)?.let { arr ->
-        (0 until arr.length()).map { arr.opt(it) }.firstOrNull { it is String } as? String
-    }
-    val privateDoNotAccessOrElseTrustedResourceUrlWrappedValue = challengeData.optJSONArray(2)?.let { arr ->
-        (0 until arr.length()).map { arr.opt(it) }.firstOrNull { it is String } as? String
-    }
+    val privateDoNotAccessOrElseSafeScriptWrappedValue = challengeData.getArray(1, null)?.find { it is String }
+    val privateDoNotAccessOrElseTrustedResourceUrlWrappedValue = challengeData.getArray(2, null)?.find { it is String }
 
-    val obj = JSONObject()
-    obj.put("messageId", messageId)
-    val interpreterJs = JSONObject()
-    interpreterJs.put("privateDoNotAccessOrElseSafeScriptWrappedValue", privateDoNotAccessOrElseSafeScriptWrappedValue ?: JSONObject.NULL)
-    interpreterJs.put("privateDoNotAccessOrElseTrustedResourceUrlWrappedValue", privateDoNotAccessOrElseTrustedResourceUrlWrappedValue ?: JSONObject.NULL)
-    obj.put("interpreterJavascript", interpreterJs)
-    obj.put("interpreterHash", interpreterHash)
-    obj.put("program", program)
-    obj.put("globalName", globalName)
-    obj.put("clientExperimentsStateBlob", clientExperimentsStateBlob)
-    return obj.toString()
+    return JsonWriter.string(
+        JsonObject.builder()
+            .value("messageId", messageId)
+            .`object`("interpreterJavascript")
+            .value("privateDoNotAccessOrElseSafeScriptWrappedValue", privateDoNotAccessOrElseSafeScriptWrappedValue)
+            .value("privateDoNotAccessOrElseTrustedResourceUrlWrappedValue", privateDoNotAccessOrElseTrustedResourceUrlWrappedValue)
+            .end()
+            .value("interpreterHash", interpreterHash)
+            .value("program", program)
+            .value("globalName", globalName)
+            .value("clientExperimentsStateBlob", clientExperimentsStateBlob)
+            .done()
+    )
 }
 
 /**
- * Parses the raw integrity token data and returns (Uint8Array JS string, duration in seconds).
+ * Parses the raw integrity token data obtained from the GenerateIT endpoint to a JavaScript
+ * `Uint8Array` that can be embedded directly in JavaScript code, and an [Int] representing the
+ * duration of this token in seconds.
  */
 fun parseIntegrityTokenData(rawIntegrityTokenData: String): Pair<String, Long> {
-    val integrityTokenData = JSONArray(rawIntegrityTokenData)
+    val integrityTokenData = JsonParser.array().from(rawIntegrityTokenData)
     return base64ToU8(integrityTokenData.getString(0)) to integrityTokenData.getLong(1)
 }
 
-/** Converts a string identifier to a JavaScript `Uint8Array` literal. */
-fun stringToU8(identifier: String): String = newUint8Array(identifier.toByteArray())
+/**
+ * Converts a string (usually the identifier used as input to `obtainPoToken`) to a JavaScript
+ * `Uint8Array` that can be embedded directly in JavaScript code.
+ */
+fun stringToU8(identifier: String): String {
+    return newUint8Array(identifier.toByteArray())
+}
 
-/** Converts "97,98,99" → "abc" with base64-url-encoding for poTokens. */
+/**
+ * Takes a poToken encoded as a sequence of bytes represented as integers separated by commas
+ * (e.g. "97,98,99" would be "abc"), which is the output of `Uint8Array::toString()` in JavaScript,
+ * and converts it to the specific base64 representation for poTokens.
+ */
 fun u8ToBase64(poToken: String): String {
-    val bytes = poToken.split(",")
+    return poToken.split(",")
         .map { it.toUByte().toByte() }
         .toByteArray()
-    return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        .toByteString()
+        .base64()
         .replace("+", "-")
         .replace("/", "_")
 }
 
-/** Scrambled challenge: decode base64, add 97 to each byte. */
+/**
+ * Takes the scrambled challenge, decodes it from base64, adds 97 to each byte.
+ */
 private fun descramble(scrambledChallenge: String): String {
     return base64ToByteString(scrambledChallenge)
         .map { (it + 97).toByte() }
@@ -75,16 +94,27 @@ private fun descramble(scrambledChallenge: String): String {
         .decodeToString()
 }
 
-/** Decodes base64 (YouTube variant) → JS Uint8Array literal. */
-private fun base64ToU8(base64: String): String = newUint8Array(base64ToByteString(base64))
+/**
+ * Decodes a base64 string encoded in the specific base64 representation used by YouTube, and
+ * returns a JavaScript `Uint8Array` that can be embedded directly in JavaScript code.
+ */
+private fun base64ToU8(base64: String): String {
+    return newUint8Array(base64ToByteString(base64))
+}
 
-private fun newUint8Array(contents: ByteArray): String =
-    "new Uint8Array([" + contents.joinToString(separator = ",") { it.toUByte().toString() } + "])"
+private fun newUint8Array(contents: ByteArray): String {
+    return "new Uint8Array([" + contents.joinToString(separator = ",") { it.toUByte().toString() } + "])"
+}
 
+/**
+ * Decodes a base64 string encoded in the specific base64 representation used by YouTube.
+ */
 private fun base64ToByteString(base64: String): ByteArray {
     val base64Mod = base64
         .replace('-', '+')
         .replace('_', '/')
         .replace('.', '=')
-    return Base64.decode(base64Mod, Base64.DEFAULT)
+
+    return (base64Mod.decodeBase64() ?: throw PoTokenException("Cannot base64 decode"))
+        .toByteArray()
 }

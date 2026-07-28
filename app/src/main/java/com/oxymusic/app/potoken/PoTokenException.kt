@@ -1,11 +1,21 @@
+/*
+ * Copyright (C) NewPipe Contributors
+ * Licensed under GPLv3 — see https://www.gnu.org/licenses/gpl-3.0.html
+ *
+ * Vendored from https://github.com/TeamNewPipe/NewPipe (PR #11955)
+ * Adapted for OxyMusic: package renamed, otherwise verbatim.
+ */
 package com.oxymusic.app.potoken
 
-/** Thrown when something goes wrong with poToken generation. */
 class PoTokenException(message: String) : Exception(message)
 
-/** Thrown when the system WebView is broken (e.g. old version that doesn't support needed JS). */
+// to be thrown if the WebView provided by the system is broken
 class BadWebViewException(message: String) : Exception(message)
 
-/** Builds the appropriate exception for a JS error. */
-fun buildExceptionForJsError(error: String): Exception =
-    if (error.contains("SyntaxError")) BadWebViewException(error) else PoTokenException(error)
+fun buildExceptionForJsError(error: String): Exception {
+    return if (error.contains("SyntaxError")) {
+        BadWebViewException(error)
+    } else {
+        PoTokenException(error)
+    }
+}

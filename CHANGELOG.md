@@ -3,7 +3,61 @@
 Todos os lançamentos notáveis do OxyMusic serão documentados aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
-## [1.13.0] — 2026-07-28
+## [1.14.0] — 2026-07-28
+
+### 🐛 Corrigido (poToken REAL — vendorizado do NewPipe, não stub)
+
+**Honestidade sobre a 1.13.0**: a versão anterior continha uma implementação **não-funcional**
+de poToken. A função `fetchBotGuardChallenge()` em `PoTokenWebView.kt` era um **stub** — não
+buscava o desafio BotGuard real do YouTube, apenas retornava o `visitorData` cru fingindo que
+era o challenge. Como resultado, a geração do poToken falhava silenciosamente (catch → warning)
+e o app voltava a tomar 403 exatamente como antes. Toda a infraestrutura ao redor (WebView,
+JS interface, provider) estava construída, mas a parte que realmente importava era simulada.
+
+### ✨ v1.14.0 — Arquivos reais vendorizados do NewPipe
+
+Esta versão substitui o stub pelos **arquivos reais e testados em produção** do projeto NewPipe
+(GPLv3, open source, PR #11955), copiados verbatim com adaptações mínimas:
+
+- **`PoTokenWebView.kt`** — implementação completa e funcional. Faz POST real para:
+  - `https://www.youtube.com/api/jnn/v1/Create` (busca desafio BotGuard)
+  - `https://www.youtube.com/api/jnn/v1/GenerateIT` (gera integrity token)
+  - Headers preservados exatamente: `User-Agent`, `Accept`, `Content-Type: application/json+protobuf`,
+    `x-goog-api-key`, `x-user-agent: grpc-web-javascript/0.1`
+  - Body preservado: `[ "O43z0dpjhgX20SCx4KAo" ]` e `[ "O43z0dpjhgX20SCx4KAo", "<botguardResponse>" ]`
+
+- **`PoTokenProviderImpl.kt`** — usa `YoutubeParsingHelper.getVisitorDataFromInnertube()` do
+  NewPipeExtractor (não um stub) pra obter visitorData real
+
+- **`JavaScriptUtil.kt`** — copiado verbatim, usa `nanojson` + `okio` (dependências adicionadas)
+
+- **`po_token.html`** — asset copiado verbatim do NewPipe (VM BotGuard real)
+
+### 🔧 Adaptações feitas (mínimas, preservando lógica)
+- **RxJava3 → Kotlin coroutines**: `Single<T>` → `suspend fun`, `.blockingGet()` → `runBlocking { }`,
+  `SingleEmitter<T>` → `CompletableDeferred<T>`
+- **DownloaderImpl → OkHttpClient**: já usado no projeto, headers/URL/body preservados
+- **`App.instance` → `appContext`**: passado via construtor (OxyMusic não tem singleton App)
+- **`DeviceUtils.supportsWebView()` → inline**: usando `CookieManager.getInstance()` (mesma lógica)
+- **`BuildConfig.DEBUG` → sempre logar**: sem dependência de BuildConfig
+
+### 📦 Dependências adicionadas
+- `com.github.TeamNewPipe:nanojson:1.79` (MIT) — parsing JSON usado pelo JavaScriptUtil
+- `com.squareup.okio:okio:3.9.0` (Apache 2.0) — usado pelo JavaScriptUtil para base64/ByteString
+
+### 📋 Créditos (obrigatório pela licença GPLv3)
+- Arquivos potoken/* são Copyright © NewPipe Contributors, licensed under GPLv3
+- Fonte: https://github.com/TeamNewPipe/NewPipe (PR #11955, branch dev)
+- OxyMusic continua MIT, mas os arquivos vendorizados mantêm GPLv3 (compatível)
+
+### 🎯 Critério de aceite
+Antes de declarar corrigido, o fluxo completo (busca → resolve → play) deve funcionar sem
+`ERROR_CODE_IO_BAD_HTTP_STATUS` / 403. Os logs de `PoTokenProviderImpl` devem mostrar:
+- "Got visitorData (len=N)"
+- "Generated streaming poToken (len=N)"
+- "poToken generated for videoId=XXX (playerPot len=N, streamingPot len=N)"
+
+## [1.13.0] — 2026-07-28 (REVOKE — continha stub não-funcional)
 
 ### 🐛 Corrigido (poToken via WebView — fix definitivo do HTTP 403)
 
