@@ -3,6 +3,31 @@
 Todos os lançamentos notáveis do OxyMusic serão documentados aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
+## [1.7.0] — 2026-07-28
+
+### 🐛 Corrigido
+- **Bug crítico**: `ERROR_CODE_IO_BAD_HTTP_STATUS` resolvido! Causa raiz definitiva:
+  - ExoPlayer usava DataSource padrão que não seguia redirects cross-protocol (HTTP→HTTPS)
+  - YouTube CDN usa redirects cross-protocol → ExoPlayer falhava
+- **Solução**: configurado `DefaultHttpDataSource.Factory()` com:
+  - `setAllowCrossProtocolRedirects(true)` ← principal fix
+  - `setUserAgent("com.google.android.youtube/...")` ← User-Agent do app YouTube oficial
+  - `setConnectTimeoutMs(15000)` e `setReadTimeoutMs(20000)`
+- Adicionado `&ratebypass=yes` nas URLs do googlevideo.com (sem isso, seek além de 30s retorna 403)
+
+### ✨ Adicionado
+- **Trending via Innertube `/browse` endpoint** com `browseId=FEtrending`
+  - Mais confiável que Piped (que estava falhando)
+  - Piped agora é apenas fallback
+  - Sem erro "Sem conexão com trending" na tela Home
+
+### 🔧 Mudado
+- `PlaybackController` agora usa `DefaultMediaSourceFactory` customizado
+- Adicionada dependência `media3-datasource`
+- InnertubeClient: novo método `trending()` com parser de `richGridRenderer`
+- URLs do YouTube sanitizadas (remove trailing `&`)
+- Logs mais detalhados em `trending()`
+
 ## [1.6.0] — 2026-07-28
 
 ### 🐛 Corrigido

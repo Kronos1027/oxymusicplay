@@ -7,7 +7,10 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import com.oxymusic.app.model.Track
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -20,10 +23,10 @@ import javax.inject.Singleton
 /**
  * ExoPlayer direto — sem MediaController async, sem service.
  *
- * O player é criado em init {}, então está SEMPRE pronto quando playTrack() é chamado.
- * Sem delays de conexão, sem falhas silenciosas.
- *
- * MediaSession é criada para controles no lock screen (Android 5+).
+ * Configurado com HTTP DataSource que:
+ * - Usa User-Agent "com.google.android.youtube" (algumas fontes exigem)
+ * - Permite redirects cross-protocol (HTTP→HTTPS)
+ * - Permite cross-origin redirects (YouTube usa CDN com redirect)
  */
 @Singleton
 class PlaybackController @Inject constructor(
@@ -57,7 +60,22 @@ class PlaybackController @Inject constructor(
     private var mediaSession: MediaSession?
 
     init {
+        // HTTP DataSource with proper User-Agent and cross-protocol redirects
+        // (YouTube CDN uses HTTP→HTTPS redirects that ExoPlayer blocks by default)
+        val httpDataSource = DefaultHttpDataSource.Factory()
+            .setUserAgent("com.google.android.youtube/20.10.38 (Linux; U; Android 13)")
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(20_000)
+
+        // Combine with file DataSource for local files
+        val dataSourceFactory = DefaultDataSource.Factory(context, httpDataSource)
+
+        // Build ExoPlayer with custom MediaSourceFactory that uses our DataSource
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+
         player = ExoPlayer.Builder(context)
+            .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
@@ -131,9 +149,11 @@ class PlaybackController @Inject constructor(
             .setArtist(artist)
             .setArtworkUri(thumbnailUrl.takeIf { it.isNotEmpty() }?.let { android.net.Uri.parse(it) })
             .build()
+        // Sanitize stream URL — remove trailing & if any
+        val cleanUrl = streamUrl?.trim()?.let { if (it.endsWith("&")) it.dropLast(1) else it }
         return MediaItem.Builder()
             .setMediaId(id)
-            .setUri(streamUrl ?: id)
+            .setUri(cleanUrl ?: id)
             .setMediaMetadata(metadata)
             .build()
     }

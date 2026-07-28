@@ -14,8 +14,8 @@ android {
         applicationId = "com.oxymusic.app"
         minSdk = 31
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.6.0-mvp"
+        versionCode = 7
+        versionName = "1.7.0-mvp"
         vectorDrawables { useSupportLibrary = true }
     }
     buildTypes {
@@ -63,6 +63,7 @@ dependencies {
     implementation(libs.androidx.media3.session)
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.common)
+    implementation(libs.androidx.media3.datasource)
     implementation(libs.coil.compose)
     implementation(libs.coil.gif)
     implementation(libs.androidx.palette)

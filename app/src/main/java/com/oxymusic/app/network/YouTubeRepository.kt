@@ -102,8 +102,21 @@ class YouTubeRepository @Inject constructor(
         SearchResults(query, emptyList())
     }
 
-    /** Trending via Piped (most reliable). */
+    /** Trending via Innertube browse endpoint (primary), Piped fallback. */
     suspend fun trending(region: String = "BR"): List<Track> = withContext(Dispatchers.IO) {
+        Log.i(TAG, "trending: region=$region")
+        // 1. Innertube FEtrending (primary)
+        try {
+            val tracks = innertube.trending(region)
+            if (tracks.isNotEmpty()) {
+                Log.i(TAG, "trending SUCCESS via Innertube: ${tracks.size} tracks")
+                return@withContext tracks
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "trending Innertube failed: ${e.message}")
+        }
+
+        // 2. Piped fallback
         for (instance in pipedInstances) {
             val url = "$instance/trending?region=$region"
             val raw = httpGet(url) ?: continue
@@ -120,9 +133,13 @@ class YouTubeRepository @Inject constructor(
                         durationMs = (JsonExtractor.extractLong(itemStr, "duration") ?: 0L) * 1000L,
                     )
                 }
-                if (tracks.isNotEmpty()) return@withContext tracks
+                if (tracks.isNotEmpty()) {
+                    Log.i(TAG, "trending SUCCESS via Piped: ${tracks.size} tracks")
+                    return@withContext tracks
+                }
             } catch (e: Exception) { continue }
         }
+        Log.w(TAG, "trending: ALL sources failed")
         emptyList()
     }
 

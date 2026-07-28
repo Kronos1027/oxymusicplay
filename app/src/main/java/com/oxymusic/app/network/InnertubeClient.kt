@@ -201,12 +201,119 @@ class InnertubeClient @Inject constructor() {
             }
 
             if (bestAudio != null) {
-                return ResolvedStream(streamUrl = bestAudio, durationMs = duration)
+                // Add &ratebypass=yes for YouTube URLs — without it, seeking past 30s returns 403
+                val finalUrl = if (bestAudio.contains("googlevideo.com") && !bestAudio.contains("ratebypass")) {
+                    "$bestAudio&ratebypass=yes"
+                } else bestAudio
+                return ResolvedStream(streamUrl = finalUrl, durationMs = duration)
             }
         } catch (e: Exception) {
             Log.e(TAG, "$clientName parse error", e)
         }
         return null
+    }
+
+    /**
+     * Get trending videos via Innertube /browse endpoint with FEtrending.
+     * More reliable than Piped — uses YouTube's internal API directly.
+     */
+    suspend fun trending(region: String = "BR"): List<Track> = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().apply {
+                put("context", JSONObject().apply {
+                    put("client", JSONObject().apply {
+                        put("clientName", "ANDROID")
+                        put("clientVersion", "20.10.38")
+                        put("hl", "pt")
+                        put("gl", region)
+                    })
+                })
+                put("browseId", "FEtrending")
+            }.toString()
+
+            val req = Request.Builder()
+                .url("$baseUrl/browse?key=$apiKey")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .header("User-Agent", "com.google.android.youtube/20.10.38 (Linux; U; Android 13)")
+                .header("Content-Type", "application/json")
+                .build()
+
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext emptyList()
+                val raw = resp.body?.string() ?: return@withContext emptyList()
+                parseTrending(raw)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "trending error", e)
+            emptyList()
+        }
+    }
+
+    private fun parseTrending(raw: String): List<Track> {
+        val tracks = mutableListOf<Track>()
+        try {
+            val root = JSONObject(raw)
+            // Walk contents → twoColumnBrowseResultsRenderer → tabs → tabRenderer → content → richGridRenderer → contents
+            val twoCol = root.optJSONObject("contents")
+                ?.optJSONObject("twoColumnBrowseResultsRenderer")
+                ?.optJSONArray("tabs") ?: return emptyList()
+
+            for (i in 0 until twoCol.length()) {
+                val tab = twoCol.optJSONObject(i)?.optJSONObject("tabRenderer") ?: continue
+                val content = tab.optJSONObject("content") ?: continue
+                val richGrid = content.optJSONObject("richGridRenderer") ?: continue
+                val contents = richGrid.optJSONArray("contents") ?: continue
+
+                for (j in 0 until contents.length()) {
+                    val item = contents.optJSONObject(j) ?: continue
+                    val richItem = item.optJSONObject("richItemRenderer") ?: continue
+                    val video = richItem.optJSONObject("content")?.optJSONObject("videoRenderer") ?: continue
+                    val track = parseVideoRenderer(video) ?: continue
+                    tracks.add(track)
+                }
+                if (tracks.isNotEmpty()) break
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "parseTrending error", e)
+        }
+        return tracks
+    }
+
+    private fun parseVideoRenderer(v: JSONObject): Track? {
+        val videoId = v.optString("videoId").ifEmpty { return null }
+
+        val title = StringBuilder()
+        v.optJSONObject("title")?.optJSONArray("runs")?.let { runs ->
+            for (i in 0 until runs.length()) {
+                title.append(runs.optJSONObject(i)?.optString("text", "") ?: "")
+            }
+        }
+        if (title.isEmpty()) {
+            v.optJSONObject("title")?.optString("simpleText", "")?.let { title.append(it) }
+        }
+        if (title.isEmpty()) return null
+
+        val channel = v.optJSONObject("longBylineText")?.optJSONArray("runs")?.let { runs ->
+            runs.optJSONObject(0)?.optString("text", "") ?: ""
+        } ?: v.optJSONObject("ownerText")?.optJSONArray("runs")?.let { runs ->
+            runs.optJSONObject(0)?.optString("text", "") ?: ""
+        } ?: "Unknown"
+
+        val durationStr = v.optJSONObject("lengthText")?.optString("simpleText", "") ?: ""
+        val durationMs = parseDuration(durationStr)
+
+        val thumbs = v.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+        val thumb = if (thumbs != null && thumbs.length() > 0) {
+            thumbs.optJSONObject(thumbs.length() - 1)?.optString("url", "") ?: ""
+        } else "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+
+        return Track(
+            id = videoId,
+            title = title.toString().trim(),
+            artist = channel,
+            thumbnailUrl = thumb,
+            durationMs = durationMs,
+        )
     }
 
     /**
