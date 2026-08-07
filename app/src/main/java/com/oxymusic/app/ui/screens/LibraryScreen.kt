@@ -52,6 +52,7 @@ fun LibraryScreen(
     val scanning by libraryVm.scanning.collectAsState()
     val searching by libraryVm.searching.collectAsState()
     val query by libraryVm.query.collectAsState()
+    val pendingQuery by libraryVm.pendingQuery.collectAsState()
     val permissionGranted by libraryVm.permissionGranted.collectAsState()
     val error by libraryVm.error.collectAsState()
     val colors = MaterialTheme.colorScheme
@@ -69,6 +70,15 @@ fun LibraryScreen(
             permLauncher.launch(arrayOf(android.Manifest.permission.READ_MEDIA_AUDIO))
         } else if (localTracks.isEmpty()) {
             libraryVm.scanLocal()
+        }
+    }
+
+    // Consume pending query — when set, the screen auto-switched to online tab
+    // (done by LibraryViewModel.searchFromOutside) and the search already ran.
+    // We just need to clear the flag so it doesn't re-trigger.
+    LaunchedEffect(pendingQuery) {
+        if (pendingQuery != null) {
+            libraryVm.consumePendingQuery()
         }
     }
 

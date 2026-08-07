@@ -15,7 +15,6 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -231,27 +230,27 @@ fun PlayerScreen(
                 }
             }
 
-            // Test playback button (when nothing is playing)
+            // Empty state hint (when nothing is playing) — replaces old "Testar playback" debug button
             AnimatedVisibility(
                 visible = track == null,
                 enter = fadeIn() + scaleIn(),
                 exit = fadeOut() + scaleOut()
             ) {
-                Column(modifier = Modifier.padding(top = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    OutlinedButton(
-                        onClick = { playerVm.playTestAudio() },
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.primary),
-                        shape = RoundedCornerShape(20.dp)
-                    ) {
-                        Icon(Icons.Outlined.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Testar playback (MP3 sample)", fontSize = 12.sp)
-                    }
+                Column(
+                    modifier = Modifier.padding(top = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                     Text(
-                        "Use isto para isolar problemas de playback",
-                        color = colors.onSurface.copy(alpha = 0.4f),
+                        "Busque uma música na aba Biblioteca para começar",
+                        color = colors.onSurface.copy(alpha = 0.5f),
+                        fontSize = 12.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                    Text(
+                        "Tocadas recentes aparecem em Início → Tocadas recentemente",
+                        color = colors.onSurface.copy(alpha = 0.3f),
                         fontSize = 10.sp,
-                        modifier = Modifier.padding(top = 4.dp)
+                        modifier = Modifier.padding(top = 4.dp),
                     )
                 }
             }

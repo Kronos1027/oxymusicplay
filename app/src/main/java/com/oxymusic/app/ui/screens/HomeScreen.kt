@@ -8,14 +8,20 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -24,18 +30,22 @@ import coil.compose.AsyncImage
 import com.oxymusic.app.data.HistoryEntity
 import com.oxymusic.app.model.Track
 import com.oxymusic.app.ui.viewmodel.HomeViewModel
+import com.oxymusic.app.ui.viewmodel.LibraryViewModel
 import com.oxymusic.app.ui.viewmodel.PlayerViewModel
 
 @Composable
 fun HomeScreen(
     onTrackClick: () -> Unit,
+    onSearchClick: () -> Unit,
     homeVm: HomeViewModel = hiltViewModel(),
     playerVm: PlayerViewModel = hiltViewModel(),
+    libraryVm: LibraryViewModel = hiltViewModel(),
 ) {
     val trending by homeVm.trending.collectAsState()
     val history by homeVm.history.collectAsState()
     val loading by homeVm.loading.collectAsState()
     val colors = MaterialTheme.colorScheme
+    var searchQuery by rememberSaveable { mutableStateOf("") }
 
     LazyColumn(
         modifier = Modifier
@@ -54,6 +64,32 @@ fun HomeScreen(
                     color = colors.onBackground,
                     fontWeight = FontWeight.Bold
                 )
+            }
+        }
+
+        // Search bar (clickable — navigates to Library > Online tab)
+        item {
+            Surface(
+                onClick = onSearchClick,
+                shape = RoundedCornerShape(14.dp),
+                color = colors.surfaceVariant.copy(alpha = 0.4f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, colors.onSurface.copy(alpha = 0.15f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Search, contentDescription = null, tint = colors.primary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        "Buscar músicas, artistas…",
+                        color = colors.onSurface.copy(alpha = 0.5f),
+                        fontSize = 14.sp,
+                    )
+                }
             }
         }
 
@@ -111,17 +147,27 @@ fun HomeScreen(
             }
         }
 
-        // Quick suggestions
+        // Quick suggestions — clickable, trigger search in Library
         item {
             SectionHeader("🎵 Sugestões de busca", colors)
             Row(
                 Modifier.padding(horizontal = 16.dp).horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                listOf("🌙 Lofi", "⚡ Rock", "😔 Sad", "📚 Focus", "🌸 Anime OP", "🎧 EDM").forEach { mood ->
+                listOf(
+                    "🌙 Lofi" to "lofi beats",
+                    "⚡ Rock" to "rock nacional",
+                    "😔 Sad" to "sad songs",
+                    "📚 Focus" to "focus music",
+                    "🌸 Anime OP" to "anime opening",
+                    "🎧 EDM" to "edm 2026",
+                ).forEach { (label, query) ->
                     AssistChip(
-                        onClick = {},
-                        label = { Text(mood, fontSize = 12.sp) },
+                        onClick = {
+                            libraryVm.searchFromOutside(query)
+                            onSearchClick()
+                        },
+                        label = { Text(label, fontSize = 12.sp) },
                         colors = AssistChipDefaults.assistChipColors(
                             containerColor = colors.surfaceVariant.copy(alpha = 0.5f),
                             labelColor = colors.onSurface

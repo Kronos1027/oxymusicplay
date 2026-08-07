@@ -76,7 +76,12 @@ fun OxyMusicApp(settings: Settings) {
             startDestination = Dest.HOME.route,
             modifier = Modifier.background(colors.background).padding(padding)
         ) {
-            composable(Dest.HOME.route) { HomeScreen(onTrackClick = { nav.navigate("player") }) }
+            composable(Dest.HOME.route) {
+                HomeScreen(
+                    onTrackClick = { nav.navigate("player") },
+                    onSearchClick = { nav.navigate(Dest.LIBRARY.route) },
+                )
+            }
             composable(Dest.LIBRARY.route) { LibraryScreen(onTrackClick = { nav.navigate("player") }) }
             composable(Dest.OXYDJ.route) { com.oxymusic.app.ui.screens.OxyDjScreen(onTrackClick = { nav.navigate("player") }) }
             composable(Dest.SETTINGS.route) { SettingsScreen() }

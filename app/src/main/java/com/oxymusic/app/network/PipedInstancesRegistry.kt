@@ -38,6 +38,12 @@ class PipedInstancesRegistry @Inject constructor() {
         "https://pipedapi.nosebs.ru",
         "https://pipedapi.ducks.party",
         "https://pipedapi.smnz.de",
+        "https://pipedapi.darkness.services",
+        "https://pipedapi.drus.rs",
+        "https://pipedapi.r2.va",
+        "https://api.piped.yt",
+        "https://pipedapi.csb.dev",
+        "https://pipedapi.hostux.net",
     )
 
     @Volatile

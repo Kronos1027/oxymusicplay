@@ -63,6 +63,13 @@ class LibraryViewModel @Inject constructor(
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
 
+    /**
+     * Pending query — when set, LibraryScreen will auto-switch to "online" tab
+     * and trigger the search. Used by HomeScreen's "Sugestões de busca" chips.
+     */
+    private val _pendingQuery = MutableStateFlow<String?>(null)
+    val pendingQuery: StateFlow<String?> = _pendingQuery.asStateFlow()
+
     private val _searching = MutableStateFlow(false)
     val searching: StateFlow<Boolean> = _searching.asStateFlow()
 
@@ -87,6 +94,23 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun onQueryChange(q: String) { _query.value = q }
+
+    /**
+     * Triggers a search from outside the Library screen (e.g. HomeScreen chips).
+     * Sets the query, switches to "online" tab, and runs the search.
+     * The screen observes pendingQuery and clears it after consuming.
+     */
+    fun searchFromOutside(query: String) {
+        _query.value = query
+        _selectedTab.value = "online"
+        _pendingQuery.value = query
+        search()
+    }
+
+    /** Called by LibraryScreen when it consumes the pending query. */
+    fun consumePendingQuery() {
+        _pendingQuery.value = null
+    }
 
     fun refreshPermission() {
         _permissionGranted.value = hasReadMediaPermission()

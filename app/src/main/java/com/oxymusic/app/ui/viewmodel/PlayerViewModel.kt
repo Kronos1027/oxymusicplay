@@ -94,7 +94,7 @@ class PlayerViewModel @Inject constructor(
                     val is403 = e.contains("403") || e.contains("BAD_HTTP_STATUS")
                     val currentTrack = currentTrack.value
                     val lastSrc = _lastSource.value
-                    if (is403 && currentTrack != null && lastSrc != null && lastSrc != "test-mp3") {
+                    if (is403 && currentTrack != null && lastSrc != null) {
                         log("403 detected mid-playback — adding '$lastSrc' to failedSources and retrying with next source")
                         failedSources.add(lastSrc)
                         // Retry resolveStream excluding the failed source
@@ -187,25 +187,6 @@ class PlayerViewModel @Inject constructor(
                 _resolving.value = false
                 _resolvingSource.value = null
             }
-        }
-    }
-
-    /** Plays a known-good test MP3 to isolate playback issues. */
-    fun playTestAudio() {
-        log("▶ playTestAudio: Google sample MP3")
-        viewModelScope.launch {
-            _errorMessage.value = null
-            _mascotMessage.value = "Teste de playback… 🎵"
-            _lastSource.value = "test-mp3"
-            val testTrack = Track(
-                id = "test-sample",
-                title = "Test Playback (sample audio)",
-                artist = "OxyMusic",
-                thumbnailUrl = "",
-                streamUrl = "https://storage.googleapis.com/exoplayer-test-media-0/play.mp3",
-            )
-            playback.playTrack(testTrack)
-            log("Test MP3 submitted to ExoPlayer")
         }
     }
 
