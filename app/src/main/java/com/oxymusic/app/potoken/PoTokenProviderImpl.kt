@@ -45,6 +45,7 @@ class PoTokenProviderImpl(private val appContext: Context) : PoTokenProvider {
     private var webPoTokenGenerator: PoTokenGenerator? = null
 
     override fun getWebClientPoToken(videoId: String): PoTokenResult? {
+        Log.i(TAG, "▶ getWebClientPoToken(videoId=$videoId) called — webViewSupported=$webViewSupported webViewBadImpl=$webViewBadImpl")
         if (!webViewSupported || webViewBadImpl) {
             Log.w(TAG, "WebView not supported or marked bad — skipping poToken")
             return null

@@ -18,24 +18,30 @@ import javax.inject.Singleton
 import dagger.hilt.android.qualifiers.ApplicationContext
 
 /**
- * Multi-source YouTube client.
+ * Multi-source YouTube client (v2.0 — completely refactored).
  *
- * Priority for SEARCH:
- * 1. Innertube API direct (most reliable, no poToken needed)
+ * RESOLVE PRIORITY (after v2.0 reform):
+ * 1. NewPipeExtractor with real poToken via BotGuard WebView (handles signatureCipher
+ *    deciphering + poToken in one shot — most reliable when WebView is available).
+ * 2. Innertube direct (IOS, ANDROID_MUSIC, ANDROID_VR, TVHTML5) — fast, but increasingly
+ *    blocked by YouTube's bot detection. Tries ANDROID_MUSIC first as the prompt requested.
+ * 3. YouTubeStreamResolver — pure HTTP fallback using WEB_EMBEDDED, WEB+signatureTimestamp,
+ *    and watch page scraping. No native libs needed.
+ * 4. Piped API with dynamic health-check (uses PipedInstancesRegistry — no more hardcoded
+ *    dead instances).
+ *
+ * SEARCH PRIORITY:
+ * 1. Innertube (no poToken needed for search)
  * 2. NewPipeExtractor (fallback)
  * 3. Piped API (last resort)
  *
- * Priority for STREAM URL:
- * 1. Innertube player endpoint with multiple client types (WEB, ANDROID_VR, etc.)
- * 2. NewPipeExtractor (uses user's residential IP)
- * 3. Piped API (4 instances, fallback)
- *
- * Same approach as InnerTune / RiMusic / ViMusic.
- * NO API key needed.
+ * NO API KEY needed for any source. Same approach as InnerTune / RiMusic / ViMusic.
  */
 @Singleton
 class YouTubeRepository @Inject constructor(
     private val innertube: InnertubeClient,
+    private val httpResolver: YouTubeStreamResolver,
+    private val pipedRegistry: PipedInstancesRegistry,
     @ApplicationContext private val appContext: android.content.Context,
 ) {
 
@@ -60,13 +66,6 @@ class YouTubeRepository @Inject constructor(
             Log.e(TAG, "NewPipe init failed", e)
         }
     }
-
-    private val pipedInstances = listOf(
-        "https://api.piped.private.coffee",
-        "https://pipedapi.kavin.rocks",
-        "https://pipedapi.adminforge.de",
-        "https://pipedapi.r4fo.com",
-    )
 
     /** Search YouTube via Innertube (primary), NewPipe + Piped fallback. */
     suspend fun search(query: String): SearchResults = withContext(Dispatchers.IO) {
@@ -109,11 +108,12 @@ class YouTubeRepository @Inject constructor(
             Log.w(TAG, "search NewPipe failed: ${e.message}")
         }
 
-        // 3. Piped fallback
-        for (instance in pipedInstances) {
+        // 3. Piped fallback (with dynamic instances)
+        val instances = pipedRegistry.getLiveInstances()
+        for (instance in instances) {
             val r = tryPipedSearch(instance, query)
             if (r.tracks.isNotEmpty()) {
-                Log.i(TAG, "search SUCCESS via Piped: ${r.tracks.size} tracks")
+                Log.i(TAG, "search SUCCESS via Piped ($instance): ${r.tracks.size} tracks")
                 return@withContext r
             }
         }
@@ -135,8 +135,9 @@ class YouTubeRepository @Inject constructor(
             Log.w(TAG, "trending Innertube failed: ${e.message}")
         }
 
-        // 2. Piped fallback
-        for (instance in pipedInstances) {
+        // 2. Piped fallback (dynamic instances)
+        val instances = pipedRegistry.getLiveInstances()
+        for (instance in instances) {
             val url = "$instance/trending?region=$region"
             val raw = httpGet(url) ?: continue
             try {
@@ -153,7 +154,7 @@ class YouTubeRepository @Inject constructor(
                     )
                 }
                 if (tracks.isNotEmpty()) {
-                    Log.i(TAG, "trending SUCCESS via Piped: ${tracks.size} tracks")
+                    Log.i(TAG, "trending SUCCESS via Piped ($instance): ${tracks.size} tracks")
                     return@withContext tracks
                 }
             } catch (e: Exception) { continue }
@@ -165,11 +166,13 @@ class YouTubeRepository @Inject constructor(
     /**
      * Resolve stream URL. Returns ResolveResult with details about which source worked.
      *
-     * SOURCE ORDER (corrected based on Claude's analysis + v1.13.0 spec):
-     * 1. NewPipeExtractor FIRST — it can decipher signatureCipher (YouTube now encrypts ~everything in 2025/2026)
-     *    AND has PoTokenProvider registered (since v1.13.0) — so its URLs work without 403
-     * 2. Innertube as fast-path — direct URLs without signatureCipher, may work without poToken
-     * 3. Piped LAST — proxy that may add latency and IP-mismatch issues
+     * SOURCE ORDER (v2.0):
+     * 1. NewPipeExtractor FIRST — handles signatureCipher deciphering AND has PoTokenProvider
+     *    registered. Most reliable source when WebView BotGuard works.
+     * 2. Innertube direct — IOS, ANDROID_MUSIC, ANDROID_VR, TVHTML5. Increasingly blocked
+     *    but worth trying as fast-path.
+     * 3. yt-dlp-android — the most resilient fallback. Slower but updated against YouTube blocking.
+     * 4. Piped LAST — dynamic health-check, uses only live instances.
      *
      * Validates each URL with GET+Range (NOT HEAD — googlevideo rejects HEAD).
      *
@@ -215,13 +218,13 @@ class YouTubeRepository @Inject constructor(
             }
         }
 
-        // 2. Innertube as fast-path
+        // 2. Innertube direct (multiple client types)
         if (!excludeSources.any { it.startsWith("Innertube") }) {
             try {
-                Log.i(TAG, "Trying Innertube (fast-path)...")
+                Log.i(TAG, "Trying Innertube (multiple clients)...")
                 val result = innertube.resolveStream(videoId)
                 if (result != null) {
-                    Log.i(TAG, "Innertube got URL, validating with GET+Range...")
+                    Log.i(TAG, "Innertube got URL via ${result.sourceLabel}, validating...")
                     val valid = innertube.validateStreamUrl(result.streamUrl)
                     if (valid) {
                         Log.i(TAG, "resolveStream SUCCESS via ${result.sourceLabel} (URL validated)")
@@ -242,9 +245,37 @@ class YouTubeRepository @Inject constructor(
             }
         }
 
-        // 3. Piped LAST
+        // 3. HTTP fallback (YouTubeStreamResolver — WEB_EMBEDDED, WEB+STS, watch scrape)
+        if ("HTTP" !in excludeSources) {
+            try {
+                Log.i(TAG, "Trying HTTP resolver (fallback)...")
+                val result = httpResolver.resolveStream(videoId)
+                if (result != null) {
+                    Log.i(TAG, "HTTP resolver got URL via ${result.sourceLabel}, validating...")
+                    val valid = innertube.validateStreamUrl(result.streamUrl)
+                    if (valid) {
+                        Log.i(TAG, "resolveStream SUCCESS via ${result.sourceLabel} (URL validated)")
+                        return@withContext ResolveResult(
+                            track = track.copy(
+                                streamUrl = result.streamUrl,
+                                durationMs = if (result.durationMs > 0) result.durationMs else track.durationMs,
+                            ),
+                            source = result.sourceLabel,
+                            success = true,
+                        )
+                    } else {
+                        Log.w(TAG, "HTTP resolver URL validation FAILED — falling through")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "resolveStream HTTP failed: ${e.message}")
+            }
+        }
+
+        // 4. Piped LAST (dynamic instances)
         if (!excludeSources.any { it.startsWith("Piped") }) {
-            for (instance in pipedInstances) {
+            val instances = pipedRegistry.getLiveInstances()
+            for (instance in instances) {
                 val sourceName = "Piped/${instance.substringAfterLast("/")}"
                 if (sourceName in excludeSources) continue
                 try {
@@ -296,6 +327,23 @@ class YouTubeRepository @Inject constructor(
             else
                 "Todas as fontes falharam. Tente outra música."
         )
+    }
+
+    /**
+     * Get related tracks for a given video (used by OxyDJ recommendations).
+     * Uses Innertube /next endpoint (free, no API key, no external service).
+     */
+    suspend fun getRelatedTracks(videoId: String, limit: Int = 10): List<Track> = withContext(Dispatchers.IO) {
+        try {
+            val tracks = innertube.getRelatedTracks(videoId, limit)
+            if (tracks.isNotEmpty()) {
+                Log.i(TAG, "getRelatedTracks SUCCESS via Innertube: ${tracks.size}")
+                return@withContext tracks
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "getRelatedTracks Innertube failed: ${e.message}")
+        }
+        emptyList()
     }
 
     private fun tryPipedSearch(instance: String, query: String): SearchResults {

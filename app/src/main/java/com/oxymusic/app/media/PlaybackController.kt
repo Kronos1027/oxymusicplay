@@ -196,10 +196,15 @@ class PlaybackController @Inject constructor(
         val metadata = MediaMetadata.Builder()
             .setTitle(title)
             .setArtist(artist)
+            .setAlbumTitle(album)
             .setArtworkUri(thumbnailUrl.takeIf { it.isNotEmpty() }?.let { android.net.Uri.parse(it) })
             .build()
-        // Sanitize stream URL — remove trailing & if any, ensure proper URL encoding
-        val cleanUrl = streamUrl?.trim()?.let { if (it.endsWith("&")) it.dropLast(1) else it }
+        // For LOCAL tracks: streamUrl is a content:// URI — use it directly, no sanitization
+        // For YOUTUBE tracks: streamUrl is a googlevideo URL — sanitize (remove trailing &, etc.)
+        val cleanUrl = when (source) {
+            com.oxymusic.app.model.TrackSource.LOCAL -> streamUrl?.trim()
+            com.oxymusic.app.model.TrackSource.YOUTUBE -> streamUrl?.trim()?.let { if (it.endsWith("&")) it.dropLast(1) else it }
+        }
         return MediaItem.Builder()
             .setMediaId(id)
             .setUri(cleanUrl ?: id)
@@ -209,12 +214,21 @@ class PlaybackController @Inject constructor(
 
     private fun MediaItem.toTrack(): Track {
         val m = mediaMetadata
+        // Detect source by URI scheme: content:// = local, http(s):// = youtube
+        val uriStr = playbackProperties?.uri?.toString() ?: ""
+        val source = if (uriStr.startsWith("content://")) {
+            com.oxymusic.app.model.TrackSource.LOCAL
+        } else {
+            com.oxymusic.app.model.TrackSource.YOUTUBE
+        }
         return Track(
             id = mediaId,
             title = m.title?.toString() ?: "Unknown",
             artist = m.artist?.toString() ?: "Unknown",
             thumbnailUrl = m.artworkUri?.toString() ?: "",
-            streamUrl = playbackProperties?.uri?.toString(),
+            streamUrl = uriStr.ifEmpty { null },
+            source = source,
+            album = m.albumTitle?.toString(),
         )
     }
 

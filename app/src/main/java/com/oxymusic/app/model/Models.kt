@@ -2,6 +2,16 @@ package com.oxymusic.app.model
 
 import kotlinx.serialization.Serializable
 
+/**
+ * Source of a Track.
+ * - LOCAL: scanned from device MediaStore (content://media/external/audio/media/N)
+ * - YOUTUBE: from YouTube search/trending/related (resolved to googlevideo URL at play time)
+ */
+enum class TrackSource {
+    LOCAL,
+    YOUTUBE,
+}
+
 @Serializable
 data class Track(
     val id: String,
@@ -10,6 +20,13 @@ data class Track(
     val thumbnailUrl: String,
     val durationMs: Long = 0L,
     val streamUrl: String? = null,
+    val source: TrackSource = TrackSource.YOUTUBE,
+    // Local-only metadata (null for YouTube tracks)
+    val album: String? = null,
+    val bitrate: Long = 0L,        // bits per second (e.g. 320000 = 320 kbps)
+    val mimeType: String? = null,  // e.g. "audio/mpeg"
+    val fileSize: Long = 0L,       // bytes
+    val year: Int = 0,
 )
 
 data class SearchResults(val query: String, val tracks: List<Track>)

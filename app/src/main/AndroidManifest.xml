@@ -8,6 +8,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Local library (MediaStore) — Android 13+ uses READ_MEDIA_AUDIO -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <!-- Legacy permission for older devices (just in case) -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
     <application
         android:name=".OxyMusicApp"
         android:allowBackup="true"

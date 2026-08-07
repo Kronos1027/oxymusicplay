@@ -116,15 +116,32 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun playTrack(track: Track) {
-        log("▶ playTrack: ${track.title} - ${track.artist} (id=${track.id})")
-        failedSources.clear()  // reset failed sources for new track
+        log("▶ playTrack: ${track.title} - ${track.artist} (id=${track.id} source=${track.source})")
+        failedSources.clear()
         currentResolvingTrackId = track.id
         viewModelScope.launch {
             _resolving.value = true
-            _resolvingSource.value = "NewPipe → Innertube → Piped"
+            _resolvingSource.value = if (track.source == com.oxymusic.app.model.TrackSource.LOCAL) "Local" else "NewPipe → Innertube → HTTP → Piped"
             _errorMessage.value = null
-            _mascotMessage.value = "Resolvendo stream… ⏳"
+            _mascotMessage.value = if (track.source == com.oxymusic.app.model.TrackSource.LOCAL) "Tocando do aparelho 🎵" else "Resolvendo stream… ⏳"
             try {
+                // LOCAL tracks already have a content:// URI — no resolution needed
+                if (track.source == com.oxymusic.app.model.TrackSource.LOCAL && !track.streamUrl.isNullOrEmpty()) {
+                    log("LOCAL track — playing directly from ${track.streamUrl.take(60)}...")
+                    _lastSource.value = "Local"
+                    playback.playTrack(track)
+                    _resolving.value = false
+                    _resolvingSource.value = null
+                    historyDao.insert(
+                        HistoryEntity(
+                            trackId = track.id, title = track.title, artist = track.artist,
+                            thumbnailUrl = track.thumbnailUrl, durationMs = track.durationMs,
+                            playedAt = System.currentTimeMillis(),
+                        )
+                    )
+                    return@launch
+                }
+
                 log("Calling youtube.resolveStream...")
                 val result = youtube.resolveStream(track)
                 log("resolveStream result: success=${result.success} source=${result.source} streamUrl=${if (result.track.streamUrl.isNullOrEmpty()) "NULL" else "OK len=${result.track.streamUrl!!.length}"}")
@@ -140,7 +157,7 @@ class PlayerViewModel @Inject constructor(
                 }
 
                 _lastSource.value = result.source
-                failedSources.add(result.source)  // mark this source as "tried" for retry logic
+                failedSources.add(result.source)
                 _mascotMessage.value = "Tocando via ${result.source}! 🎶"
                 log("Calling playback.playTrack with streamUrl=${result.track.streamUrl!!.take(80)}...")
                 playback.playTrack(result.track)

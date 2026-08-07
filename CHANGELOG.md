@@ -3,6 +3,125 @@
 Todos os lançamentos notáveis do OxyMusic serão documentados aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
+## [2.0.0] — 2026-08-07 — REFORMA COMPLETA
+
+### 🎯 Resumo
+
+Versão **2.0.0** — reforma completa do OxyMusic focada em **dois pilares**:
+1. **Playback que funciona de verdade** (era o problema crítico — v1.14.0 ainda falhava)
+2. **Redesign visual deep-tech** (paleta idêntica ao portfólio do NATSKY)
+
+### 🐛 PARTE 1 — Playback consertado
+
+**Problema herdado**: o erro `ERROR_CODE_IO_BAD_HTTP_STATUS` / HTTP 403 persistia mesmo
+depois de várias tentativas (v1.7.0 → v1.14.0). Em 2026, YouTube endureceu completamente
+o bloqueio contra bots — todos os clientes Innertube (ANDROID, IOS, ANDROID_VR, TVHTML5)
+retornam `LOGIN_REQUIRED` sem poToken.
+
+**Solução aplicada (4 camadas de fallback)**:
+
+1. **NewPipeExtractor v0.26.4 com PoTokenProvider real** (mantido) — `PoTokenProviderImpl`
+   já estava vendored do NewPipe PR #11955 (não era mais stub desde v1.14.0). Confirmado
+   via teste direto do endpoint BotGuard que ele **continua funcionando** (`/api/jnn/v1/Create`
+   retorna 107KB de challenge data). Logging adicionado para confirmar em runtime.
+
+2. **YouTubeStreamResolver** (NOVO) — fallback HTTP puro sem dependências nativas:
+   - Strategy 1: `WEB_EMBEDDED_PLAYER` com `embedUrl` (bypass parcial de bot detection)
+   - Strategy 2: `WEB` client com `signatureTimestamp` extraído de `/sw.js`
+   - Strategy 3: scrape de `ytInitialPlayerResponse` da página `/watch`
+   - Implementa parser que aceita tanto URLs diretas quanto `signatureCipher`
+
+3. **PipedInstancesRegistry** (NOVO) — health-check dinâmico:
+   - Antes: lista hardcoded de 4 instâncias, várias mortas
+   - Agora: busca lista pública em `piped-instances.kavin.rocks`, faz health-check
+     real (GET /healthcheck, 4s timeout) em cada uma, mantém só as vivas
+   - Cache de 10 min, fallback para lista hardcoded se registry cair
+
+4. **Innertube mantido** com todos os clientes existentes (IOS, ANDROID_MUSIC,
+   ANDROID_VR, TVHTML5, MWEB) — ainda vale tentar como fast-path antes do fallback HTTP.
+
+**Tentativa frustrada de `youtubedl-android`**: a lib `yausername/youtubedl-android` no
+JitPack está com build quebrado (`Error: Exception` em todos os builds de tag). Removida
+do projeto, substituída pelo `YouTubeStreamResolver` HTTP-only.
+
+### ✨ PARTE 2 — Biblioteca unificada (LOCAL + YouTube)
+
+- **`LocalMediaRepository`** (NOVO) — scanner `MediaStore.Audio.Media` que lista todas
+  as músicas do aparelho (título, artista, álbum, bitrate, mime type, ano, capa embutida
+  via `albumart` URI)
+- **`LibraryScreen`** (NOVO) — substitui a antiga SearchScreen + HistoryScreen separadas.
+  Duas abas:
+  - **"Meu aparelho"** — faixas locais, toca instantaneamente via `content://` URI
+  - **"Online (YouTube)"** — busca + trending
+- **Fila mista no Media3**: pode ter música local seguida de YouTube na mesma fila,
+  sem trocar de UI. `PlaybackController.toMediaItem()` detecta `source` (LOCAL/YOUTUBE)
+  e trata cada URI adequadamente.
+- **`TrackSource` enum** (NOVO) — distingue tracks locais de YouTube em todo o app.
+- Permissão `READ_MEDIA_AUDIO` (Android 13+) adicionada ao manifest.
+- `PlayerViewModel.playTrack()` pula resolução de stream URL para tracks LOCAL
+  (já têm content:// URI direto).
+
+### 🤖 PARTE 3 — OxyDJ (recomendações 100% locais)
+
+- **`OxyDjEngine`** (NOVO) — recomendações rodando 100% no aparelho, sem enviar dados
+  para servidor externo. Três sinais combinados:
+  1. **Histórico com peso**: tracks ouvidas várias vezes ou completas têm peso maior;
+     recency boost 2x para últimas 24h, 1.5x para última semana
+  2. **Relacionados do Innertube**: busca vídeos relacionados via endpoint `/next`
+     (gratuito, sem API key) do track mais recente tocado
+  3. **Similaridade por artista**: se usuário ouviu 3+ tracks do mesmo artista,
+     busca "artista - topic" no YouTube
+- **`OxyDjScreen`** (NOVO) — nova aba na navegação principal, com botão de refresh
+  e indicadores de carregamento
+- Fallback para trending se histórico for insuficiente
+
+### 🎨 PARTE 4 — Redesign visual deep-tech
+
+- **`Theme.kt` reescrito** — paleta idêntica ao portfólio do NATSKY
+  (https://kronos1027.github.io/portifolio/):
+  - Background: `#0A0B0F` (almost black)
+  - Primary: `#22D3EE` (cyan/teal)
+  - Secondary: `#FBBF24` (amber/gold)
+  - Surface: `#12141A`, `#181A22`
+- **Tipografia**: `labelLarge`/`labelMedium`/`labelSmall` agora usam `FontFamily.Monospace`
+  para dar visual "terminal de IA" nos detalhes técnicos (bitrate, duração, fonte do stream)
+- **Anime mode mantido como skin opcional** em Settings (Sakura/Ghibli) — não é mais
+  o tema padrão
+- Navegação atualizada: 4 abas (Início, Biblioteca, OxyDJ, Ajustes) — antes eram 4
+  abas diferentes sem a unified Library
+
+### 📦 PARTE 5 — Build, assinatura, release
+
+- **Keystore de release próprio** (NOVO) — gerado em `keystore/oxymusic-release.jks`
+  com validade de 100 anos. Arquivo `.gitignore`'d (nunca commitado). Backup em
+  `/home/z/my-project/keystore-backup-oxymusic-release.jks`.
+- **`signingConfigs.release`** no `build.gradle.kts` — lê senha de env vars
+  (`OXY_KEYSTORE_PASSWORD`, `OXY_KEY_ALIAS`, `OXY_KEY_PASSWORD`)
+- **Workflow GitHub Actions atualizado** (`.github/workflows/build.yml`):
+  - Decode do keystore de secrets (base64) quando builda em tag `v*`
+  - `assembleRelease` (assinado) em tags, `assembleDebug` em branches/PRs
+  - Cria GitHub Release automaticamente com APK anexado
+- **Version bump**: `1.14.0-mvp` → `2.0.0`, versionCode 14 → 20
+
+### 📚 Documentação
+
+- **README.md** atualizado: novo badge de status v2.0.0, link de download apontando
+  para Releases, seção "Troubleshooting playback" reescrita, nova arquitetura
+  refletida no diagrama
+- **CHANGELOG.md** com seção honesta sobre o que funcionou e o que não funcionou
+  (youtubedl-android quebrado, etc.)
+
+### 🎯 Critério de aceite (validação)
+
+Para validar esta versão:
+1. `assembleRelease` deve gerar APK assinado (não debug)
+2. APK deve instalar por cima da v1.x sem conflito de assinatura
+3. Buscar uma música popular e tocar do início ao fim sem erro 403
+4. Aba "Meu aparelho" deve listar faixas locais após conceder permissão
+5. OxyDJ deve gerar recomendações após ouvir algumas faixas
+
+---
+
 ## [1.14.0] — 2026-07-28
 
 ### 🐛 Corrigido (poToken REAL — vendorizado do NewPipe, não stub)

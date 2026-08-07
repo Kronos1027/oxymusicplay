@@ -1,4 +1,4 @@
-name: Build APK
+name: Build & Release APK
 
 on:
   push:
@@ -34,8 +34,35 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build debug APK
+      # ------------------------------------------------------------------
+      # Decode signing keystore from secrets (base64-encoded)
+      # Required secrets (Settings → Secrets → Actions):
+      #   OXY_KEYSTORE_BASE64   — base64 of the .jks file (run: base64 -w0 oxymusic-release.jks)
+      #   OXY_KEYSTORE_PASSWORD — keystore password (e.g. "oxymusic")
+      #   OXY_KEY_ALIAS         — key alias (e.g. "oxymusic")
+      #   OXY_KEY_PASSWORD      — key password (e.g. "oxymusic")
+      #
+      # If secrets are missing, falls back to debug signing (only for non-tag builds).
+      # ------------------------------------------------------------------
+      - name: Decode release keystore
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mkdir -p keystore
+          echo "${{ secrets.OXY_KEYSTORE_BASE64 }}" | base64 -d > keystore/oxymusic-release.jks
+          ls -la keystore/
+        continue-on-error: false
+
+      - name: Build debug APK (for branch pushes / PRs)
+        if: startsWith(github.ref, 'refs/tags/v') == false
         run: ./gradlew :app:assembleDebug --no-daemon --console=plain
+
+      - name: Build release APK (for tag pushes)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          OXY_KEYSTORE_PASSWORD: ${{ secrets.OXY_KEYSTORE_PASSWORD }}
+          OXY_KEY_ALIAS: ${{ secrets.OXY_KEY_ALIAS }}
+          OXY_KEY_PASSWORD: ${{ secrets.OXY_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease --no-daemon --console=plain
 
       - name: Get version name
         id: version
@@ -47,7 +74,14 @@ jobs:
       - name: Rename APK
         run: |
           mkdir -p artifacts
-          cp app/build/outputs/apk/debug/app-debug.apk artifacts/OxyMusic-${{ steps.version.outputs.version }}.apk
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk artifacts/OxyMusic-${{ steps.version.outputs.version }}.apk
+            echo "Release APK copied"
+          else
+            cp app/build/outputs/apk/debug/app-debug.apk artifacts/OxyMusic-${{ steps.version.outputs.version }}-debug.apk
+            echo "Debug APK copied"
+          fi
+          ls -la artifacts/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -56,7 +90,7 @@ jobs:
           path: artifacts/*.apk
           retention-days: 90
 
-      - name: Create Release on tag
+      - name: Create GitHub Release on tag
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
@@ -65,52 +99,37 @@ jobs:
           body: |
             ## 🎵 OxyMusic ${{ steps.version.outputs.version }}
 
+            ### 🔥 Destaques desta versão
+
+            **v2.0.0 — Reforma completa**
+            - **Playback consertado**: NewPipeExtractor + poToken real via BotGuard WebView + fallback HTTP multi-estratégia + Piped com health-check dinâmico
+            - **Biblioteca unificada**: abas "Meu aparelho" (MediaStore local) + "Online (YouTube)" com fila mista no Media3
+            - **OxyDJ**: recomendações 100% locais usando histórico Room + relacionados do Innertube + similaridade por artista
+            - **Redesign deep-tech**: paleta idêntica ao portfólio do NATSKY (preto + teal + âmbar), fontes mono pros detalhes técnicos (bitrate/duração)
+            - **APK assinado com keystore próprio** — atualizações futuras não quebram
+
             ### 📥 Instalação
-            1. Baixe o arquivo `OxyMusic-${{ steps.version.outputs.version }}.apk` abaixo
+            1. Baixe o arquivo `OxyMusic-2.0.0.apk` abaixo
             2. Permita instalação de fontes desconhecidas
             3. Toque no APK para instalar
+            4. Se você já tinha o OxyMusic 1.x, basta instalar por cima — o app vai atualizar sem perder dados
+
+            ### ⚙️ Permissões novas
+            - **Acesso ao áudio** (Android 13+): necessário para listar suas músicas locais na aba "Meu aparelho"
 
             ### ⚙️ Otimização HyperOS/MIUI
             - Configurações → Apps → OxyMusic → Bateria → "Sem restrições"
             - Segurança → Permissões → Auto-start → ative
 
-            ### 📋 Changelog
+            ### 📋 Changelog completo
             Veja [CHANGELOG.md](https://github.com/Kronos1027/oxymusicplay/blob/main/CHANGELOG.md)
+
+            ### 💜 Créditos
+            Feito por **NATSKY** — [@Kronos1027](https://github.com/Kronos1027)
+
+            > _"deep tech / terminal de IA" — mesma identidade visual do portfólio_
           draft: false
           prerelease: false
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Clean up old assets from release
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          # Delete any APK assets that don't match the current version
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          VERSION="${{ steps.version.outputs.version }}"
-          echo "Cleaning up old assets from release $TAG_NAME (keeping only $VERSION)"
-          # Get release ID
-          RELEASE_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG_NAME" | \
-            python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
-          if [ -z "$RELEASE_ID" ]; then
-            echo "No release found for tag $TAG_NAME"
-            exit 0
-          fi
-          # List assets and delete any that don't match current version
-          curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | \
-            python3 -c "
-          import json, sys, subprocess
-          assets = json.load(sys.stdin)
-          for a in assets:
-              name = a.get('name', '')
-              aid = a.get('id', '')
-              if '$VERSION' not in name:
-                  print(f'Deleting old asset: {name} (id={aid})')
-                  subprocess.run(['curl', '-s', '-X', 'DELETE', '-H', 'Authorization: token \${{ secrets.GITHUB_TOKEN }}',
-                      f'https://api.github.com/repos/${{ github.repository }}/releases/assets/{aid}'],
-                      capture_output=True)
-              else:
-                  print(f'Keeping: {name}')
-          "

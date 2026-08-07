@@ -4,10 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.PlayCircle
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -22,16 +21,15 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.oxymusic.app.model.Settings
 import com.oxymusic.app.ui.components.MiniPlayer
-import com.oxymusic.app.ui.screens.HistoryScreen
 import com.oxymusic.app.ui.screens.HomeScreen
+import com.oxymusic.app.ui.screens.LibraryScreen
 import com.oxymusic.app.ui.screens.PlayerScreen
-import com.oxymusic.app.ui.screens.SearchScreen
 import com.oxymusic.app.ui.screens.SettingsScreen
 
 private enum class Dest(val route: String, val label: String, val icon: ImageVector) {
     HOME("home", "Início", Icons.Default.Home),
-    SEARCH("search", "Buscar", Icons.Default.Search),
-    HISTORY("history", "Histórico", Icons.Default.LibraryMusic),
+    LIBRARY("library", "Biblioteca", Icons.Default.LibraryMusic),
+    OXYDJ("oxydj", "OxyDJ", Icons.Default.AutoAwesome),
     SETTINGS("settings", "Ajustes", Icons.Default.Settings),
 }
 
@@ -79,8 +77,8 @@ fun OxyMusicApp(settings: Settings) {
             modifier = Modifier.background(colors.background).padding(padding)
         ) {
             composable(Dest.HOME.route) { HomeScreen(onTrackClick = { nav.navigate("player") }) }
-            composable(Dest.SEARCH.route) { SearchScreen(onTrackClick = { nav.navigate("player") }) }
-            composable(Dest.HISTORY.route) { HistoryScreen(onTrackClick = { nav.navigate("player") }) }
+            composable(Dest.LIBRARY.route) { LibraryScreen(onTrackClick = { nav.navigate("player") }) }
+            composable(Dest.OXYDJ.route) { com.oxymusic.app.ui.screens.OxyDjScreen(onTrackClick = { nav.navigate("player") }) }
             composable(Dest.SETTINGS.route) { SettingsScreen() }
             composable("player") { PlayerScreen() }
         }

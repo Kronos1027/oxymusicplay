@@ -189,6 +189,50 @@ class InnertubeClient @Inject constructor() {
     }
 
     /**
+     * Get related tracks for a video via Innertube /next endpoint (free, no API key).
+     * Used by OxyDJ for recommendations.
+     */
+    suspend fun getRelatedTracks(videoId: String, limit: Int = 10): List<Track> = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().apply {
+                put("context", JSONObject().apply {
+                    put("client", JSONObject().apply {
+                        put("clientName", "ANDROID")
+                        put("clientVersion", "20.10.38")
+                        put("hl", "pt")
+                        put("gl", "BR")
+                    })
+                })
+                put("videoId", videoId)
+            }.toString()
+
+            val req = Request.Builder()
+                .url("$baseUrl/next?key=$apiKey")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .header("User-Agent", "com.google.android.youtube/20.10.38 (Linux; U; Android 13)")
+                .header("Content-Type", "application/json")
+                .build()
+
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "getRelatedTracks HTTP ${resp.code}")
+                    return@withContext emptyList()
+                }
+                val raw = resp.body?.string() ?: return@withContext emptyList()
+                // Walk the response looking for compactVideoRenderer (related videos)
+                val tracks = mutableListOf<Track>()
+                val seen = mutableSetOf<String>()
+                val root = JSONObject(raw)
+                walkForTracks(root, tracks, seen)
+                if (tracks.size > limit) tracks.subList(0, limit) else tracks
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "getRelatedTracks error", e)
+            emptyList()
+        }
+    }
+
+    /**
      * Validates that a stream URL is actually accessible (returns 2xx or 3xx).
      *
      * IMPORTANT: Uses GET with Range: bytes=0-1024 instead of HEAD.
