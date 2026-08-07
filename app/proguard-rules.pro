@@ -1,8 +1,1 @@
--keep class org.schabi.newpipe.extractor.** { *; }
--keep class org.schabi.newpipe.extractor.services.youtube.** { *; }
--keep class * extends dagger.hilt.android.lifecycle.HiltViewModel { *; }
--keep class * extends androidx.room.RoomDatabase { *; }
--keepattributes *Annotation*, InnerClasses
--dontnote kotlinx.serialization.AnnotationsKt
--keepclassmembers class kotlinx.serialization.json.** { *** Companion; }
--keepclasseswithmembers class kotlinx.serialization.json.** { kotlinx.serialization.KSerializer serializer(...); }
+-keep class com.oxymusic.app.** { *; }

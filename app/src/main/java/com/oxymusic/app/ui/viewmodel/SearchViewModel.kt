@@ -12,22 +12,27 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
-class HomeViewModel @Inject constructor(
+class SearchViewModel @Inject constructor(
     private val audius: AudiusClient,
 ) : ViewModel() {
 
-    private val _trending = MutableStateFlow<List<Track>>(emptyList())
-    val trending: StateFlow<List<Track>> = _trending.asStateFlow()
+    private val _query = MutableStateFlow("")
+    val query: StateFlow<String> = _query.asStateFlow()
+
+    private val _results = MutableStateFlow<List<Track>>(emptyList())
+    val results: StateFlow<List<Track>> = _results.asStateFlow()
 
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
-    init { loadTrending() }
+    fun onQueryChange(q: String) { _query.value = q }
 
-    fun loadTrending() {
+    fun search() {
+        val q = _query.value.trim()
+        if (q.isEmpty()) return
         viewModelScope.launch {
             _loading.value = true
-            try { _trending.value = audius.trending() } catch (_: Exception) {}
+            try { _results.value = audius.search(q) } catch (_: Exception) {}
             _loading.value = false
         }
     }

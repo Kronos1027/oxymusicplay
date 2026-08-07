@@ -5,73 +5,59 @@ import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import javax.inject.Inject
-import javax.inject.Singleton
 
-@Singleton
-class VisualizerManager @Inject constructor() {
+/**
+ * VisualizerManager — captures FFT data from ExoPlayer's audio output.
+ *
+ * Provides real-time frequency magnitude data (0-1 normalized) for the
+ * SpectrumVisualizer Canvas component.
+ */
+class VisualizerManager {
+
     private var visualizer: Visualizer? = null
 
-    private val _magnitudes = MutableStateFlow(FloatArray(BARS) { 0f })
+    private val _magnitudes = MutableStateFlow(FloatArray(64) { 0f })
     val magnitudes: StateFlow<FloatArray> = _magnitudes.asStateFlow()
 
     fun attach(audioSessionId: Int) {
-        if (audioSessionId == 0) return
         try {
-            release()
-            val v = Visualizer(audioSessionId)
-            v.captureSize = Visualizer.getCaptureSizeRange()[1]
-            v.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
-                override fun onWaveFormDataCapture(visualizer: Visualizer, waveform: ByteArray, samplingRate: Int) {
-                    if (waveform.isEmpty()) return
-                    val bars = BARS
-                    val out = FloatArray(bars)
-                    val step = (waveform.size / bars).coerceAtLeast(1)
-                    for (i in 0 until bars) {
-                        var sum = 0
-                        for (j in 0 until step) {
-                            val idx = i * step + j
-                            if (idx >= waveform.size) break
-                            val b = waveform[idx].toInt() and 0xFF
-                            sum += kotlin.math.abs(b - 128)
+            visualizer?.release()
+            val range = Visualizer.getCaptureSizeRange()
+            val captureSize = range[1].coerceAtMost(1024)
+            visualizer = Visualizer(audioSessionId).apply {
+                this.captureSize = captureSize
+                setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
+                    override fun onWaveFormDataCapture(visualizer: Visualizer?, waveform: ByteArray?, samplingRate: Int) {}
+                    override fun onFftDataCapture(visualizer: Visualizer?, fft: ByteArray?, samplingRate: Int) {
+                        if (fft == null) return
+                        val n = fft.size / 2
+                        val mags = FloatArray(64)
+                        for (i in 0 until 64) {
+                            if (i < n) {
+                                val re = fft[i * 2].toFloat()
+                                val im = fft[i * 2 + 1].toFloat()
+                                val mag = Math.sqrt((re * re + im * im).toDouble()).toFloat()
+                                mags[i] = (mag / 128f).coerceIn(0f, 1f)
+                            }
                         }
-                        out[i] = (sum.toFloat() / step) / 128f
+                        _magnitudes.value = mags
                     }
-                    _magnitudes.value = out
-                }
-                override fun onFftDataCapture(visualizer: Visualizer, fft: ByteArray, samplingRate: Int) {
-                    if (fft.isEmpty()) return
-                    val n = fft.size / 2
-                    val bars = BARS
-                    val out = FloatArray(bars)
-                    val step = (n / bars).coerceAtLeast(1)
-                    for (i in 0 until bars) {
-                        var max = 0
-                        for (j in 0 until step) {
-                            val idx = 2 * (i * step + j)
-                            if (idx + 1 >= fft.size) break
-                            val re = fft[idx].toInt()
-                            val im = fft[idx + 1].toInt()
-                            val mag = kotlin.math.sqrt((re.toDouble() * re + im.toDouble() * im)).toInt()
-                            if (mag > max) max = mag
-                        }
-                        out[i] = (max.toFloat() / 128f).coerceIn(0f, 1f)
-                    }
-                    _magnitudes.value = out
-                }
-            }, Visualizer.getMaxCaptureRate() / 2, true, true)
-            v.enabled = true
-            visualizer = v
+                }, captureSize, false, true)
+                enabled = true
+            }
+            Log.i(TAG, "Visualizer attached to session $audioSessionId")
         } catch (e: Exception) {
-            Log.w("Visualizer", "attach failed: ${e.message}")
+            Log.e(TAG, "Visualizer attach failed", e)
         }
     }
 
     fun release() {
-        try { visualizer?.enabled = false; visualizer?.release() } catch (e: Exception) {}
+        visualizer?.apply { enabled = false; release() }
         visualizer = null
-        _magnitudes.value = FloatArray(BARS) { 0f }
+        _magnitudes.value = FloatArray(64) { 0f }
     }
 
-    companion object { const val BARS = 64 }
+    companion object {
+        private const val TAG = "VisualizerManager"
+    }
 }

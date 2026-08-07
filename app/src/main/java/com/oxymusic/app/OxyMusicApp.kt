@@ -12,11 +12,10 @@ class OxyMusicApp : Application() {
         super.onCreate()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                "oxymusic_now_playing",
-                "Now Playing",
+                "oxymusic_now_playing", "Now Playing",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Controles de mídia do OxyMusic"
+                description = "OxyMusic media playback controls"
                 setShowBadge(false)
             }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)

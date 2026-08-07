@@ -4,45 +4,46 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.oxymusic.app.model.Settings
 import com.oxymusic.app.ui.components.MiniPlayer
+import com.oxymusic.app.ui.screens.EqualizerScreen
 import com.oxymusic.app.ui.screens.HomeScreen
-import com.oxymusic.app.ui.screens.LibraryScreen
 import com.oxymusic.app.ui.screens.PlayerScreen
-import com.oxymusic.app.ui.screens.SettingsScreen
+import com.oxymusic.app.ui.screens.SearchScreen
+import com.oxymusic.app.ui.viewmodel.PlayerViewModel
 
 private enum class Dest(val route: String, val label: String, val icon: ImageVector) {
     HOME("home", "Início", Icons.Default.Home),
-    LIBRARY("library", "Biblioteca", Icons.Default.LibraryMusic),
-    OXYDJ("oxydj", "OxyDJ", Icons.Default.AutoAwesome),
-    SETTINGS("settings", "Ajustes", Icons.Default.Settings),
+    SEARCH("search", "Buscar", Icons.Default.Search),
+    EQUALIZER("equalizer", "EQ", Icons.Default.Equalizer),
 }
 
 @Composable
-fun OxyMusicApp(settings: Settings) {
+fun OxyMusicApp(playerVm: PlayerViewModel = hiltViewModel()) {
     val nav = rememberNavController()
     val colors = MaterialTheme.colorScheme
+
+    LaunchedEffect(Unit) { playerVm.connect() }
 
     Scaffold(
         bottomBar = {
             Column {
-                // Mini player above nav bar (Spotify-style)
-                MiniPlayer(onClick = { nav.navigate("player") })
+                MiniPlayer(playerVm = playerVm, onClick = { nav.navigate("player") })
                 NavigationBar(containerColor = colors.background.copy(alpha = 0.98f)) {
                     val backStack by nav.currentBackStackEntryAsState()
                     val currentRoute = backStack?.destination?.route
@@ -76,16 +77,10 @@ fun OxyMusicApp(settings: Settings) {
             startDestination = Dest.HOME.route,
             modifier = Modifier.background(colors.background).padding(padding)
         ) {
-            composable(Dest.HOME.route) {
-                HomeScreen(
-                    onTrackClick = { nav.navigate("player") },
-                    onSearchClick = { nav.navigate(Dest.LIBRARY.route) },
-                )
-            }
-            composable(Dest.LIBRARY.route) { LibraryScreen(onTrackClick = { nav.navigate("player") }) }
-            composable(Dest.OXYDJ.route) { com.oxymusic.app.ui.screens.OxyDjScreen(onTrackClick = { nav.navigate("player") }) }
-            composable(Dest.SETTINGS.route) { SettingsScreen() }
-            composable("player") { PlayerScreen() }
+            composable(Dest.HOME.route) { HomeScreen(onTrackClick = { nav.navigate("player") }, playerVm = playerVm) }
+            composable(Dest.SEARCH.route) { SearchScreen(onTrackClick = { nav.navigate("player") }, playerVm = playerVm) }
+            composable(Dest.EQUALIZER.route) { EqualizerScreen(playerVm = playerVm) }
+            composable("player") { PlayerScreen(onBack = { nav.popBackStack() }, playerVm = playerVm) }
         }
     }
 }

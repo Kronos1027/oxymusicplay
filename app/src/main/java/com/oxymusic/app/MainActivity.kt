@@ -6,23 +6,40 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import com.oxymusic.app.media.PlaybackService
 import com.oxymusic.app.ui.OxyMusicApp
 import com.oxymusic.app.ui.theme.OxyMusicTheme
-import com.oxymusic.app.ui.viewmodel.SettingsViewModel
+import com.google.common.util.concurrent.ListenableFuture
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    private var controllerFuture: ListenableFuture<MediaController>? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            val settingsVm: SettingsViewModel = hiltViewModel()
-            val settings by settingsVm.settings.collectAsState()
-            OxyMusicTheme(animeMode = settings.animeMode) {
-                OxyMusicApp(settings = settings)
+            OxyMusicTheme {
+                OxyMusicApp()
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val sessionToken = SessionToken(this, android.content.ComponentName(this, PlaybackService::class.java))
+        controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
+    }
+
+    override fun onStop() {
+        controllerFuture?.let {
+            MediaController.releaseFuture(it)
+        }
+        controllerFuture = null
+        super.onStop()
     }
 }

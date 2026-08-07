@@ -1,289 +1,168 @@
 package com.oxymusic.app.ui.viewmodel
 
+import android.content.ComponentName
+import android.content.Context
+import android.net.Uri
 import android.util.Log
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import com.oxymusic.app.data.AudiusClient
+import com.oxymusic.app.media.EqualizerManager
+import com.oxymusic.app.media.PlaybackService
+import com.oxymusic.app.media.VisualizerManager
+import com.oxymusic.app.model.Track
+import dagger.hilt.android.qualifiers.ApplicationContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.oxymusic.app.data.HistoryDao
-import com.oxymusic.app.data.HistoryEntity
-import com.oxymusic.app.lyrics.LrclibClient
-import com.oxymusic.app.media.CurrentAudioSessionId
-import com.oxymusic.app.media.PlaybackController
-import com.oxymusic.app.media.AudioDownloadManager
-import com.oxymusic.app.media.VisualizerManager
-import com.oxymusic.app.model.Lyrics
-import com.oxymusic.app.model.Track
-import com.oxymusic.app.network.YouTubeRepository
+import com.google.common.util.concurrent.ListenableFuture
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
-    val playback: PlaybackController,
-    val visualizer: VisualizerManager,
-    private val youtube: YouTubeRepository,
-    private val audioDownload: AudioDownloadManager,
-    private val lrclib: LrclibClient,
-    private val historyDao: HistoryDao,
+    @ApplicationContext private val context: Context,
+    private val audius: AudiusClient,
 ) : ViewModel() {
 
-    val isPlaying = playback.isPlaying.stateIn(viewModelScope, SharingStarted.Eagerly, false)
-    val currentTrack = playback.currentTrack.stateIn(viewModelScope, SharingStarted.Eagerly, null)
-    val positionMs = playback.positionMs.stateIn(viewModelScope, SharingStarted.Eagerly, 0L)
-    val durationMs = playback.durationMs.stateIn(viewModelScope, SharingStarted.Eagerly, 0L)
-    val isBuffering = playback.isBuffering.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val equalizer = EqualizerManager()
+    val visualizer = VisualizerManager()
 
-    private val _lyrics = MutableStateFlow<Lyrics?>(null)
-    val lyrics: StateFlow<Lyrics?> = _lyrics.asStateFlow()
+    private var controller: MediaController? = null
+    private var controllerFuture: ListenableFuture<MediaController>? = null
 
-    private val _resolving = MutableStateFlow(false)
-    val resolving: StateFlow<Boolean> = _resolving.asStateFlow()
+    private val _isPlaying = MutableStateFlow(false)
+    val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
-    private val _resolvingSource = MutableStateFlow<String?>(null)
-    val resolvingSource: StateFlow<String?> = _resolvingSource.asStateFlow()
+    private val _currentTrack = MutableStateFlow<Track?>(null)
+    val currentTrack: StateFlow<Track?> = _currentTrack.asStateFlow()
 
-    private val _errorMessage = MutableStateFlow<String?>(null)
-    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+    private val _positionMs = MutableStateFlow(0L)
+    val positionMs: StateFlow<Long> = _positionMs.asStateFlow()
 
-    private val _mascotMessage = MutableStateFlow<String?>(null)
-    val mascotMessage: StateFlow<String?> = _mascotMessage.asStateFlow()
+    private val _durationMs = MutableStateFlow(0L)
+    val durationMs: StateFlow<Long> = _durationMs.asStateFlow()
 
-    private val _lastSource = MutableStateFlow<String?>(null)
-    val lastSource: StateFlow<String?> = _lastSource.asStateFlow()
+    private val _isBuffering = MutableStateFlow(false)
+    val isBuffering: StateFlow<Boolean> = _isBuffering.asStateFlow()
 
-    /** v2.1.0 — download progress (0-100, or -1 when not downloading). */
-    private val _downloadProgress = MutableStateFlow(-1)
-    val downloadProgress: StateFlow<Int> = _downloadProgress.asStateFlow()
+    private val _queue = MutableStateFlow<List<Track>>(emptyList())
+    val queue: StateFlow<List<Track>> = _queue.asStateFlow()
 
-    /** v2.1.0 — true while downloading audio file (before playback starts). */
-    private val _downloading = MutableStateFlow(false)
-    val downloading: StateFlow<Boolean> = _downloading.asStateFlow()
-
-    /** v2.1.0 — true if current track is playing from cached file. */
-    private val _fromCache = MutableStateFlow(false)
-    val fromCache: StateFlow<Boolean> = _fromCache.asStateFlow()
-
-    private val _debugLog = MutableStateFlow<String>("")
-    val debugLog: StateFlow<String> = _debugLog.asStateFlow()
-
-    private fun log(msg: String) {
-        Log.i(TAG, msg)
-        _debugLog.value = _debugLog.value + "\n" + msg
+    fun connect() {
+        if (controller != null) return
+        val sessionToken = androidx.media3.session.SessionToken(
+            context, ComponentName(context, PlaybackService::class.java)
+        )
+        controllerFuture = MediaController.Builder(context, sessionToken).buildAsync().also { future ->
+            future.addListener({
+                try {
+                    controller = future.get()
+                    setupController()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Controller connection failed", e)
+                }
+            }, androidx.core.content.ContextCompat.getMainExecutor(context))
+        }
     }
 
-    // Tracks which sources have already failed for the current track (for mid-playback 403 retry)
-    private val failedSources = mutableSetOf<String>()
-    private var currentResolvingTrackId: String? = null
-
-    init {
-        // Position ticker
-        viewModelScope.launch {
-            while (true) { playback.tickPosition(); delay(250) }
-        }
-        // Load lyrics when track changes
-        viewModelScope.launch {
-            currentTrack.collect { t -> if (t != null) loadLyrics(t) }
-        }
-        // Auto-attach visualizer when audio session ID becomes available
-        viewModelScope.launch {
-            var attached = false
-            while (!attached) {
-                delay(500)
-                val sid = CurrentAudioSessionId.value
-                if (sid != 0) { visualizer.attach(sid); attached = true; log("Visualizer attached to session $sid") }
-            }
-        }
-        // Forward playback errors to errorMessage — with mid-playback 403 retry logic
-        viewModelScope.launch {
-            playback.lastError.collect { e ->
-                if (e != null) {
-                    log("PLAYBACK ERROR: $e")
-                    // Detect HTTP 403 mid-playback — try next source before showing error
-                    val is403 = e.contains("403") || e.contains("BAD_HTTP_STATUS")
-                    val currentTrack = currentTrack.value
-                    val lastSrc = _lastSource.value
-                    if (is403 && currentTrack != null && lastSrc != null) {
-                        log("403 detected mid-playback — adding '$lastSrc' to failedSources and retrying with next source")
-                        failedSources.add(lastSrc)
-                        // Retry resolveStream excluding the failed source
-                        val retryResult = youtube.resolveStream(currentTrack, excludeSources = failedSources.toSet())
-                        if (retryResult.success && !retryResult.track.streamUrl.isNullOrEmpty()) {
-                            log("Retry SUCCESS via ${retryResult.source} — playing")
-                            _lastSource.value = retryResult.source
-                            _mascotMessage.value = "Tentando via ${retryResult.source} 🔄"
-                            playback.playTrack(retryResult.track)
-                            return@collect
-                        } else {
-                            log("Retry FAILED — showing error to user")
-                        }
+    private fun setupController() {
+        controller?.let { c ->
+            c.addListener(object : Player.Listener {
+                override fun onIsPlayingChanged(playing: Boolean) { _isPlaying.value = playing }
+                override fun onPlaybackStateChanged(state: Int) {
+                    _isBuffering.value = state == Player.STATE_BUFFERING
+                    _durationMs.value = c.duration.takeIf { it > 0 } ?: 0L
+                }
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    mediaItem?.mediaMetadata?.let { meta ->
+                        _currentTrack.value = Track(
+                            id = mediaItem.mediaId,
+                            title = meta.title?.toString() ?: "Unknown",
+                            artist = meta.artist?.toString() ?: "Unknown",
+                            artworkUrl = meta.artworkUri?.toString() ?: "",
+                        )
                     }
-                    _errorMessage.value = e
+                }
+            })
+            // Attach equalizer + visualizer
+            val sid = com.oxymusic.app.media.PlaybackService.audioSessionId
+            if (sid != 0) {
+                equalizer.attach(sid)
+                visualizer.attach(sid)
+            }
+            // Position ticker
+            viewModelScope.launch {
+                while (true) {
+                    _positionMs.value = c.currentPosition
+                    _durationMs.value = c.duration.takeIf { it > 0 } ?: 0L
+                    delay(250)
                 }
             }
         }
     }
 
-    /**
-     * v2.1.0 — Download-then-play architecture.
-     *
-     * Flow:
-     * 1. LOCAL tracks → play directly (no download needed)
-     * 2. YOUTUBE tracks →
-     *    a. Check cache — if hit, play local file instantly
-     *    b. If miss: resolve stream URL → download entire file → play local file
-     *    c. Show "Baixando..." state during download with progress %
-     *    d. On error: show banner (Piped fallback is handled inside AudioDownloadManager)
-     *
-     * This replaces the old "stream URL directly to ExoPlayer" approach that caused
-     * intermittent 403 errors when URLs expired between extraction and playback.
-     */
     fun playTrack(track: Track) {
-        log("▶ playTrack: ${track.title} - ${track.artist} (id=${track.id} source=${track.source})")
-        failedSources.clear()
-        currentResolvingTrackId = track.id
-        viewModelScope.launch {
-            _resolving.value = true
-            _resolvingSource.value = if (track.source == com.oxymusic.app.model.TrackSource.LOCAL) "Local" else "Cache → Download"
-            _errorMessage.value = null
-            _downloadProgress.value = -1
-            _downloading.value = false
-            _fromCache.value = false
-            try {
-                // LOCAL tracks already have a content:// URI — no resolution needed
-                if (track.source == com.oxymusic.app.model.TrackSource.LOCAL && !track.streamUrl.isNullOrEmpty()) {
-                    log("LOCAL track — playing directly from ${track.streamUrl.take(60)}...")
-                    _lastSource.value = "Local"
-                    playback.playTrack(track)
-                    _resolving.value = false
-                    _resolvingSource.value = null
-                    historyDao.insert(
-                        HistoryEntity(
-                            trackId = track.id, title = track.title, artist = track.artist,
-                            thumbnailUrl = track.thumbnailUrl, durationMs = track.durationMs,
-                            playedAt = System.currentTimeMillis(),
-                        )
-                    )
-                    return@launch
-                }
+        val mediaItem = MediaItem.Builder()
+            .setMediaId(track.id)
+            .setUri(track.streamUrl)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(track.title)
+                    .setArtist(track.artist)
+                    .setArtworkUri(Uri.parse(track.artworkUrl))
+                    .build()
+            )
+            .build()
+        controller?.setMediaItem(mediaItem)
+        controller?.prepare()
+        controller?.play()
+        _currentTrack.value = track
+    }
 
-                // YOUTUBE tracks — download-then-play
-                log("YOUTUBE track — checking cache / downloading...")
-                _mascotMessage.value = "Preparando música… ⏳"
-                _downloading.value = true
-
-                val downloadResult = audioDownload.downloadOrGetCached(track, maxCacheSizeMb = 500) { percent ->
-                    _downloadProgress.value = percent
-                    if (percent in 0..100) {
-                        _mascotMessage.value = "Baixando… $percent% ⬇️"
-                    }
-                }
-
-                when (downloadResult) {
-                    is AudioDownloadManager.DownloadResult.Success -> {
-                        _downloading.value = false
-                        _downloadProgress.value = 100
-                        _fromCache.value = downloadResult.fromCache
-                        _lastSource.value = if (downloadResult.fromCache) "Cache" else downloadResult.source
-
-                        log("Download ready (fromCache=${downloadResult.fromCache}, source=${downloadResult.source}, " +
-                            "size=${downloadResult.file.length() / 1024}KB) — playing local file")
-
-                        _mascotMessage.value = if (downloadResult.fromCache) {
-                            "Do cache! 🚀"
-                        } else {
-                            "Tocando via ${downloadResult.source}! 🎶"
-                        }
-
-                        // Play the LOCAL file — 100% reliable, no network dependency
-                        playback.playLocalFile(downloadResult.file, track)
-
-                        historyDao.insert(
-                            HistoryEntity(
-                                trackId = track.id, title = track.title, artist = track.artist,
-                                thumbnailUrl = track.thumbnailUrl, durationMs = track.durationMs,
-                                playedAt = System.currentTimeMillis(),
-                            )
-                        )
-                    }
-                    is AudioDownloadManager.DownloadResult.Error -> {
-                        _downloading.value = false
-                        _downloadProgress.value = -1
-                        val errMsg = downloadResult.message
-                        log("DOWNLOAD ERROR: $errMsg (tried: ${downloadResult.triedSources})")
-                        _errorMessage.value = errMsg + "\n\nTente outra música. Fontes tentadas: ${downloadResult.triedSources.joinToString(", ")}"
-                        _mascotMessage.value = "Ops! 😢 Não consegui baixar"
-                    }
-                }
-            } catch (e: Throwable) {
-                log("EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
-                _errorMessage.value = "Erro: ${e.message ?: "desconhecido"}"
-                _mascotMessage.value = "Ops! 😢"
-                _downloading.value = false
-                _downloadProgress.value = -1
-            } finally {
-                _resolving.value = false
-                _resolvingSource.value = null
-            }
+    fun playQueue(tracks: List<Track>, startIndex: Int = 0) {
+        if (tracks.isEmpty()) return
+        _queue.value = tracks
+        val items = tracks.map { track ->
+            MediaItem.Builder()
+                .setMediaId(track.id)
+                .setUri(track.streamUrl)
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle(track.title)
+                        .setArtist(track.artist)
+                        .setArtworkUri(Uri.parse(track.artworkUrl))
+                        .build()
+                )
+                .build()
         }
+        controller?.setMediaItems(items, startIndex, 0L)
+        controller?.prepare()
+        controller?.play()
+        _currentTrack.value = tracks[startIndex]
     }
 
     fun togglePlayPause() {
-        if (isPlaying.value) {
-            playback.pause()
-            _mascotMessage.value = "Pausa rápida? Ok! ⏸️"
-        } else {
-            playback.play()
-            _mascotMessage.value = "Toca essa! 🎶"
-        }
+        if (controller?.isPlaying == true) controller?.pause() else controller?.play()
     }
 
-    fun next() { playback.next(); _mascotMessage.value = "Próxima! ✨" }
-    fun previous() = playback.previous()
-    fun seekTo(ms: Long) = playback.seekTo(ms)
-    fun clearError() { _errorMessage.value = null }
-    fun clearDebugLog() { _debugLog.value = "" }
+    fun next() { controller?.seekToNext() }
+    fun previous() { controller?.seekToPrevious() }
+    fun seekTo(ms: Long) { controller?.seekTo(ms) }
 
-    /** v2.1.0 — Returns true if the given track is currently cached locally. */
-    fun isTrackCached(track: Track): Boolean = audioDownload.isCached(track)
-
-    /** v2.1.0 — Returns total cache size in MB. */
-    fun getCacheSizeMb(): Long = audioDownload.getCacheSizeBytes() / 1024 / 1024
-
-    /** v2.1.0 — Returns number of cached tracks. */
-    fun getCacheCount(): Int = audioDownload.getCacheCount()
-
-    /** v2.1.0 — Clears all cached audio files. */
-    fun clearCache() {
-        audioDownload.clearCache()
-        _mascotMessage.value = "Cache limpo! 🧹"
+    override fun onCleared() {
+        super.onCleared()
+        equalizer.release()
+        visualizer.release()
+        controllerFuture?.let { MediaController.releaseFuture(it) }
+        controller = null
     }
 
-    private suspend fun loadLyrics(track: Track) {
-        _lyrics.value = null
-        val cleanTitle = track.title
-            .replace(Regex("""\s*[\(\[][^)\]]*[\)\]]"""), "")
-            .replace(Regex("""\s*-\s*(Official|Music Video|MV|Lyrics?|Audio|Visualizer|Lyric Video).*""", RegexOption.IGNORE_CASE), "")
-            .trim()
-        val cleanArtist = track.artist
-            .replace(Regex("""\s*-\s*Topic"""), "")
-            .replace(Regex("""\s*VEVO""", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("""\s*\(.*?\)"""), "")
-            .trim()
-        val lyrics = lrclib.fetch(
-            trackName = cleanTitle,
-            artistName = cleanArtist,
-            durationSec = if (track.durationMs > 0) track.durationMs / 1000 else null
-        )
-        _lyrics.value = lyrics
-    }
-
-    companion object {
-        private const val TAG = "PlayerViewModel"
-    }
+    companion object { private const val TAG = "PlayerViewModel" }
 }

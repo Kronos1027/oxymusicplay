@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
-    <color name="oxy_background">#FF08060C</color>
+    <color name="bg_0">#FF0A0B0F</color>
+    <color name="bg_1">#FF0E1016</color>
+    <color name="bg_2">#FF12141A</color>
+    <color name="bg_3">#FF181A22</color>
+    <color name="teal">#FF22D3EE</color>
+    <color name="amber">#FFFBBF24</color>
+    <color name="fg_0">#FFF4F6FB</color>
+    <color name="fg_1">#FFC9CDD6</color>
+    <color name="fg_2">#FF8B919E</color>
 </resources>
