@@ -53,6 +53,9 @@ fun PlayerScreen(
     val mascotMsg by playerVm.mascotMessage.collectAsState()
     val errorMsg by playerVm.errorMessage.collectAsState()
     val lastSource by playerVm.lastSource.collectAsState()
+    val downloading by playerVm.downloading.collectAsState()
+    val downloadProgress by playerVm.downloadProgress.collectAsState()
+    val fromCache by playerVm.fromCache.collectAsState()
     val magnitudes by playerVm.visualizer.magnitudes.collectAsState()
     val colors = MaterialTheme.colorScheme
     val isGhibli = settings.animeMode && settings.animeTheme == AnimeTheme.GHIBLI
@@ -144,8 +147,31 @@ fun PlayerScreen(
             AnimatedVisibility(visible = buffering, enter = fadeIn(), exit = fadeOut()) {
                 Text("⏳ Carregando…", color = colors.primary, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
             }
+            // v2.1.0 — Download progress indicator (download-then-play)
+            AnimatedVisibility(visible = downloading, enter = fadeIn(), exit = fadeOut()) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(top = 8.dp).fillMaxWidth(0.7f)
+                ) {
+                    Text(
+                        text = if (downloadProgress in 0..100) "⬇️ Baixando… $downloadProgress%" else "⬇️ Baixando…",
+                        color = colors.primary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    if (downloadProgress in 0..100) {
+                        Spacer(Modifier.height(6.dp))
+                        LinearProgressIndicator(
+                            progress = { downloadProgress / 100f },
+                            color = colors.primary,
+                            trackColor = colors.onSurface.copy(alpha = 0.15f),
+                            modifier = Modifier.fillMaxWidth().height(3.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(2.dp)),
+                        )
+                    }
+                }
+            }
             // Resolving indicator with source info
-            AnimatedVisibility(visible = resolving && !buffering, enter = fadeIn(), exit = fadeOut()) {
+            AnimatedVisibility(visible = resolving && !buffering && !downloading, enter = fadeIn(), exit = fadeOut()) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(top = 8.dp)) {
                     Text("🔍 Resolvendo stream…", color = colors.primary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                     Text(
@@ -156,14 +182,28 @@ fun PlayerScreen(
                     )
                 }
             }
-            // Active source indicator (when playing)
-            AnimatedVisibility(visible = !resolving && !buffering && lastSource != null && track != null, enter = fadeIn(), exit = fadeOut()) {
-                Text(
-                    "via $lastSource",
-                    color = colors.onSurface.copy(alpha = 0.35f),
-                    fontSize = 10.sp,
+            // Active source indicator (when playing) — includes cache badge
+            AnimatedVisibility(visible = !resolving && !buffering && !downloading && lastSource != null && track != null, enter = fadeIn(), exit = fadeOut()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
                     modifier = Modifier.padding(top = 4.dp)
-                )
+                ) {
+                    if (fromCache) {
+                        Text(
+                            "🚀 cache",
+                            color = colors.secondary,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(end = 6.dp)
+                        )
+                    }
+                    Text(
+                        "via $lastSource",
+                        color = colors.onSurface.copy(alpha = 0.35f),
+                        fontSize = 10.sp,
+                    )
+                }
             }
 
             Spacer(Modifier.height(20.dp))

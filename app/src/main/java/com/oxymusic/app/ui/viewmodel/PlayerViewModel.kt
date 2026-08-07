@@ -8,6 +8,7 @@ import com.oxymusic.app.data.HistoryEntity
 import com.oxymusic.app.lyrics.LrclibClient
 import com.oxymusic.app.media.CurrentAudioSessionId
 import com.oxymusic.app.media.PlaybackController
+import com.oxymusic.app.media.AudioDownloadManager
 import com.oxymusic.app.media.VisualizerManager
 import com.oxymusic.app.model.Lyrics
 import com.oxymusic.app.model.Track
@@ -27,6 +28,7 @@ class PlayerViewModel @Inject constructor(
     val playback: PlaybackController,
     val visualizer: VisualizerManager,
     private val youtube: YouTubeRepository,
+    private val audioDownload: AudioDownloadManager,
     private val lrclib: LrclibClient,
     private val historyDao: HistoryDao,
 ) : ViewModel() {
@@ -54,6 +56,18 @@ class PlayerViewModel @Inject constructor(
 
     private val _lastSource = MutableStateFlow<String?>(null)
     val lastSource: StateFlow<String?> = _lastSource.asStateFlow()
+
+    /** v2.1.0 — download progress (0-100, or -1 when not downloading). */
+    private val _downloadProgress = MutableStateFlow(-1)
+    val downloadProgress: StateFlow<Int> = _downloadProgress.asStateFlow()
+
+    /** v2.1.0 — true while downloading audio file (before playback starts). */
+    private val _downloading = MutableStateFlow(false)
+    val downloading: StateFlow<Boolean> = _downloading.asStateFlow()
+
+    /** v2.1.0 — true if current track is playing from cached file. */
+    private val _fromCache = MutableStateFlow(false)
+    val fromCache: StateFlow<Boolean> = _fromCache.asStateFlow()
 
     private val _debugLog = MutableStateFlow<String>("")
     val debugLog: StateFlow<String> = _debugLog.asStateFlow()
@@ -115,15 +129,31 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    /**
+     * v2.1.0 — Download-then-play architecture.
+     *
+     * Flow:
+     * 1. LOCAL tracks → play directly (no download needed)
+     * 2. YOUTUBE tracks →
+     *    a. Check cache — if hit, play local file instantly
+     *    b. If miss: resolve stream URL → download entire file → play local file
+     *    c. Show "Baixando..." state during download with progress %
+     *    d. On error: show banner (Piped fallback is handled inside AudioDownloadManager)
+     *
+     * This replaces the old "stream URL directly to ExoPlayer" approach that caused
+     * intermittent 403 errors when URLs expired between extraction and playback.
+     */
     fun playTrack(track: Track) {
         log("▶ playTrack: ${track.title} - ${track.artist} (id=${track.id} source=${track.source})")
         failedSources.clear()
         currentResolvingTrackId = track.id
         viewModelScope.launch {
             _resolving.value = true
-            _resolvingSource.value = if (track.source == com.oxymusic.app.model.TrackSource.LOCAL) "Local" else "NewPipe → Innertube → HTTP → Piped"
+            _resolvingSource.value = if (track.source == com.oxymusic.app.model.TrackSource.LOCAL) "Local" else "Cache → Download"
             _errorMessage.value = null
-            _mascotMessage.value = if (track.source == com.oxymusic.app.model.TrackSource.LOCAL) "Tocando do aparelho 🎵" else "Resolvendo stream… ⏳"
+            _downloadProgress.value = -1
+            _downloading.value = false
+            _fromCache.value = false
             try {
                 // LOCAL tracks already have a content:// URI — no resolution needed
                 if (track.source == com.oxymusic.app.model.TrackSource.LOCAL && !track.streamUrl.isNullOrEmpty()) {
@@ -142,47 +172,60 @@ class PlayerViewModel @Inject constructor(
                     return@launch
                 }
 
-                log("Calling youtube.resolveStream...")
-                val result = youtube.resolveStream(track)
-                log("resolveStream result: success=${result.success} source=${result.source} streamUrl=${if (result.track.streamUrl.isNullOrEmpty()) "NULL" else "OK len=${result.track.streamUrl!!.length}"}")
+                // YOUTUBE tracks — download-then-play
+                log("YOUTUBE track — checking cache / downloading...")
+                _mascotMessage.value = "Preparando música… ⏳"
+                _downloading.value = true
 
-                if (!result.success || result.track.streamUrl.isNullOrEmpty()) {
-                    val errMsg = result.error ?: "Não consegui obter stream URL. Tente outra música."
-                    log("ERROR: $errMsg")
-                    _errorMessage.value = errMsg
-                    _mascotMessage.value = "Ops! 😢 Não consegui tocar essa"
-                    _resolving.value = false
-                    _resolvingSource.value = null
-                    return@launch
+                val downloadResult = audioDownload.downloadOrGetCached(track, maxCacheSizeMb = 500) { percent ->
+                    _downloadProgress.value = percent
+                    if (percent in 0..100) {
+                        _mascotMessage.value = "Baixando… $percent% ⬇️"
+                    }
                 }
 
-                _lastSource.value = result.source
-                failedSources.add(result.source)
-                _mascotMessage.value = "Tocando via ${result.source}! 🎶"
-                log("Calling playback.playTrack with streamUrl=${result.track.streamUrl!!.take(80)}...")
-                playback.playTrack(result.track)
-                log("playback.playTrack returned, waiting for state change...")
+                when (downloadResult) {
+                    is AudioDownloadManager.DownloadResult.Success -> {
+                        _downloading.value = false
+                        _downloadProgress.value = 100
+                        _fromCache.value = downloadResult.fromCache
+                        _lastSource.value = if (downloadResult.fromCache) "Cache" else downloadResult.source
 
-                historyDao.insert(
-                    HistoryEntity(
-                        trackId = result.track.id, title = result.track.title, artist = result.track.artist,
-                        thumbnailUrl = result.track.thumbnailUrl, durationMs = result.track.durationMs,
-                        playedAt = System.currentTimeMillis(),
-                    )
-                )
+                        log("Download ready (fromCache=${downloadResult.fromCache}, source=${downloadResult.source}, " +
+                            "size=${downloadResult.file.length() / 1024}KB) — playing local file")
 
-                // Watchdog: if after 10 seconds nothing is playing AND no error, show error
-                launch {
-                    delay(10000)
-                    if (!isPlaying.value && _errorMessage.value == null && currentTrack.value?.id == track.id) {
-                        log("WATCHDOG: 10s elapsed, not playing, no error — showing timeout message")
-                        _errorMessage.value = "Timeout: o stream não começou em 10s. Talvez esteja bloqueado pelo YouTube. Tente outra música."
+                        _mascotMessage.value = if (downloadResult.fromCache) {
+                            "Do cache! 🚀"
+                        } else {
+                            "Tocando via ${downloadResult.source}! 🎶"
+                        }
+
+                        // Play the LOCAL file — 100% reliable, no network dependency
+                        playback.playLocalFile(downloadResult.file, track)
+
+                        historyDao.insert(
+                            HistoryEntity(
+                                trackId = track.id, title = track.title, artist = track.artist,
+                                thumbnailUrl = track.thumbnailUrl, durationMs = track.durationMs,
+                                playedAt = System.currentTimeMillis(),
+                            )
+                        )
+                    }
+                    is AudioDownloadManager.DownloadResult.Error -> {
+                        _downloading.value = false
+                        _downloadProgress.value = -1
+                        val errMsg = downloadResult.message
+                        log("DOWNLOAD ERROR: $errMsg (tried: ${downloadResult.triedSources})")
+                        _errorMessage.value = errMsg + "\n\nTente outra música. Fontes tentadas: ${downloadResult.triedSources.joinToString(", ")}"
+                        _mascotMessage.value = "Ops! 😢 Não consegui baixar"
                     }
                 }
             } catch (e: Throwable) {
                 log("EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
                 _errorMessage.value = "Erro: ${e.message ?: "desconhecido"}"
                 _mascotMessage.value = "Ops! 😢"
+                _downloading.value = false
+                _downloadProgress.value = -1
             } finally {
                 _resolving.value = false
                 _resolvingSource.value = null
@@ -205,6 +248,21 @@ class PlayerViewModel @Inject constructor(
     fun seekTo(ms: Long) = playback.seekTo(ms)
     fun clearError() { _errorMessage.value = null }
     fun clearDebugLog() { _debugLog.value = "" }
+
+    /** v2.1.0 — Returns true if the given track is currently cached locally. */
+    fun isTrackCached(track: Track): Boolean = audioDownload.isCached(track)
+
+    /** v2.1.0 — Returns total cache size in MB. */
+    fun getCacheSizeMb(): Long = audioDownload.getCacheSizeBytes() / 1024 / 1024
+
+    /** v2.1.0 — Returns number of cached tracks. */
+    fun getCacheCount(): Int = audioDownload.getCacheCount()
+
+    /** v2.1.0 — Clears all cached audio files. */
+    fun clearCache() {
+        audioDownload.clearCache()
+        _mascotMessage.value = "Cache limpo! 🧹"
+    }
 
     private suspend fun loadLyrics(track: Track) {
         _lyrics.value = null

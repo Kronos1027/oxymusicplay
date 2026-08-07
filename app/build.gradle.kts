@@ -14,8 +14,8 @@ android {
         applicationId = "com.oxymusic.app"
         minSdk = 31
         targetSdk = 35
-        versionCode = 20
-        versionName = "2.0.0"
+        versionCode = 21
+        versionName = "2.1.0"
         vectorDrawables { useSupportLibrary = true }
         // yt-dlp-android needs these abi splits for its native libs
         ndk {

@@ -184,6 +184,43 @@ class PlaybackController @Inject constructor(
 
     fun playTrack(track: Track) { setQueue(listOf(track), 0) }
 
+    /**
+     * v2.1.0 — Plays a local audio file (downloaded by AudioDownloadManager).
+     *
+     * This is the core of the download-then-play architecture:
+     * - ExoPlayer plays a file:// URI (100% reliable, no network)
+     * - No more 403 errors from expired/streaming URLs
+     * - Instant playback start (file is already on disk)
+     *
+     * @param audioFile the local .m4a file to play
+     * @param track the track metadata (title, artist, thumbnail) for display
+     */
+    fun playLocalFile(audioFile: java.io.File, track: Track) {
+        Log.i(TAG, "playLocalFile: ${audioFile.absolutePath} (${audioFile.length() / 1024}KB)")
+        val metadata = MediaMetadata.Builder()
+            .setTitle(track.title)
+            .setArtist(track.artist)
+            .setAlbumTitle(track.album)
+            .setArtworkUri(track.thumbnailUrl.takeIf { it.isNotEmpty() }?.let { android.net.Uri.parse(it) })
+            .build()
+
+        // Use file:// URI — ExoPlayer's DefaultDataSource handles this natively
+        val mediaItem = MediaItem.Builder()
+            .setMediaId(track.id)
+            .setUri(android.net.Uri.fromFile(audioFile))
+            .setMediaMetadata(metadata)
+            .build()
+
+        player.setMediaItem(mediaItem)
+        player.prepare()
+        player.playWhenReady = true
+        player.play()
+        _queue.value = listOf(track)
+        _currentIndex.value = 0
+        _currentTrack.value = track
+        _lastError.value = null
+    }
+
     fun play() { player.play() }
     fun pause() { player.pause() }
     fun next() { if (player.hasNextMediaItem()) player.seekToNextMediaItem() }
